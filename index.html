@@ -1,16 +1,45 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Kiwami Marketing System</title>
-<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
-<link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
-<link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
-<link rel="manifest" href="site.webmanifest">
+    <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
+    <link rel="manifest" href="site.webmanifest">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        // TODO(security): Session status check - client-side session management.
+        (function () {
+            const isLoggedIn = sessionStorage.getItem('isLoggedIn') === 'true';
+            if (isLoggedIn) {
+                document.documentElement.classList.add('logged-in');
+            } else {
+                document.documentElement.classList.add('logged-out');
+            }
+        })();
+    </script>
     <style>
+        /* Prevent layout shift/flicker based on auth state */
+        .logged-in #login-container {
+            display: none !important;
+        }
+
+        .logged-in #app-container {
+            display: flex !important;
+        }
+
+        .logged-out #login-container {
+            display: flex !important;
+        }
+
+        .logged-out #app-container {
+            display: none !important;
+        }
+
         :root {
             --primary: #3498db;
             --secondary: #2ecc71;
@@ -95,6 +124,257 @@
             font-size: 1rem;
         }
 
+        /* Password toggle wrapper */
+        .password-wrapper {
+            position: relative;
+        }
+
+        .password-wrapper .form-control {
+            padding-right: 42px;
+        }
+
+        .password-toggle {
+            position: absolute;
+            right: 12px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: none;
+            border: none;
+            cursor: pointer;
+            color: var(--gray);
+            font-size: 1rem;
+            padding: 0;
+            display: flex;
+            align-items: center;
+        }
+
+        .password-toggle:hover {
+            color: var(--primary);
+        }
+
+        /* ── API Keys Setup Panel ───────────────────────────────────────── */
+        .api-keys-panel {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, .05);
+            margin-bottom: 20px;
+            overflow: hidden;
+            border: 2px solid #e8f4fd;
+        }
+
+        .api-keys-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 20px;
+            cursor: pointer;
+            background: linear-gradient(135deg, #e8f4fd, #f0fff4);
+            user-select: none;
+        }
+
+        .api-keys-header:hover {
+            background: linear-gradient(135deg, #d0eaf8, #e0fdf0);
+        }
+
+        .api-keys-header h3 {
+            margin: 0;
+            font-size: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .api-keys-header .badge-required {
+            background: #e74c3c;
+            color: white;
+            font-size: 0.65rem;
+            padding: 2px 7px;
+            border-radius: 10px;
+            font-weight: 600;
+            letter-spacing: .5px;
+        }
+
+        .api-toggle-icon {
+            transition: transform .3s;
+            font-size: .85rem;
+            color: var(--gray);
+        }
+
+        .api-toggle-icon.open {
+            transform: rotate(180deg);
+        }
+
+        .api-keys-body {
+            display: none;
+            padding: 20px;
+            border-top: 1px solid #e8f4fd;
+        }
+
+        .api-info-box {
+            background: #fffbdd;
+            border: 1px solid #f0c040;
+            border-radius: 6px;
+            padding: 12px 15px;
+            margin-bottom: 18px;
+            font-size: .85rem;
+            color: #7a6000;
+        }
+
+        .api-info-box a {
+            color: #3498db;
+        }
+
+        .platform-key-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 16px;
+            margin-bottom: 18px;
+        }
+
+        .platform-key label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: 600;
+            margin-bottom: 6px;
+            font-size: .9rem;
+        }
+
+        .platform-key small {
+            display: block;
+            margin-top: 4px;
+            font-size: .75rem;
+            color: var(--gray);
+        }
+
+        .platform-key small a {
+            color: #3498db;
+        }
+
+        .key-status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+            background: #ccc;
+            margin-left: auto;
+        }
+
+        .key-status-dot.set {
+            background: #2ecc71;
+        }
+
+        /* ── Platform connection status cards ───────────────────────────── */
+        .connection-status-panel {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, .05);
+            padding: 20px;
+            margin-bottom: 20px;
+            display: none;
+        }
+
+        .connection-status-panel h3 {
+            margin: 0 0 14px;
+            font-size: 1rem;
+        }
+
+        .platform-status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+            gap: 10px;
+        }
+
+        .ps-card {
+            border-radius: 8px;
+            padding: 12px 14px;
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            border: 1px solid #eee;
+        }
+
+        .ps-card.status-ok {
+            background: #f0fff4;
+            border-color: #c3e6cb;
+        }
+
+        .ps-card.status-error {
+            background: #fff5f5;
+            border-color: #f5c6cb;
+        }
+
+        .ps-card.status-unconfigured {
+            background: #fffbdd;
+            border-color: #f0c040;
+        }
+
+        .ps-card.status-no-url {
+            background: #f8f9fa;
+            border-color: #dee2e6;
+        }
+
+        .ps-icon {
+            font-size: 1.3rem;
+            flex-shrink: 0;
+            margin-top: 2px;
+        }
+
+        .ps-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .ps-name {
+            font-weight: 600;
+            font-size: .85rem;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .ps-tag {
+            font-size: .65rem;
+            padding: 1px 6px;
+            border-radius: 8px;
+            font-weight: 700;
+            letter-spacing: .3px;
+        }
+
+        .ps-tag.ok {
+            background: #2ecc71;
+            color: white;
+        }
+
+        .ps-tag.error {
+            background: #e74c3c;
+            color: white;
+        }
+
+        .ps-tag.warn {
+            background: #f39c12;
+            color: white;
+        }
+
+        .ps-tag.skipped {
+            background: #95a5a6;
+            color: white;
+        }
+
+        .ps-detail {
+            font-size: .75rem;
+            color: var(--gray);
+            margin-top: 3px;
+            word-break: break-word;
+        }
+
+        .ps-metric {
+            font-size: .8rem;
+            font-weight: 600;
+            color: var(--primary);
+            margin-top: 4px;
+        }
+
         /* Sidebar Styles */
         .sidebar {
             width: var(--sidebar-width);
@@ -159,6 +439,27 @@
         .user-email {
             font-size: 0.8rem;
             color: var(--gray);
+        }
+
+        .btn-logout {
+            background: none;
+            border: none;
+            color: rgba(255, 255, 255, 0.6);
+            cursor: pointer;
+            font-size: 1.2rem;
+            padding: 5px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: color 0.2s, transform 0.2s;
+            border-radius: 4px;
+            margin-left: auto;
+        }
+
+        .btn-logout:hover {
+            color: var(--accent);
+            transform: scale(1.1);
+            background-color: rgba(255, 255, 255, 0.05);
         }
 
         .nav-tabs {
@@ -811,31 +1112,31 @@
             .sidebar {
                 transform: translateX(-100%);
             }
-            
+
             .sidebar.open {
                 transform: translateX(0);
             }
-            
+
             .main-content {
                 margin-left: 0;
             }
-            
+
             .calendar-grid {
                 grid-template-columns: repeat(5, 1fr);
             }
-            
+
             .dashboard {
                 grid-template-columns: 1fr;
             }
-            
+
             .chart-row {
                 grid-template-columns: 1fr;
             }
-            
+
             .platform-metrics {
                 grid-template-columns: 1fr;
             }
-            
+
             .sidebar-toggle {
                 display: block;
             }
@@ -845,18 +1146,18 @@
             .calendar-grid {
                 grid-template-columns: repeat(3, 1fr);
             }
-            
+
             .header {
                 flex-direction: column;
                 align-items: flex-start;
                 gap: 15px;
             }
-            
+
             .add-buttons {
                 width: 100%;
                 justify-content: space-between;
             }
-            
+
             .stats-grid {
                 grid-template-columns: 1fr;
             }
@@ -866,7 +1167,7 @@
             .calendar-grid {
                 grid-template-columns: repeat(2, 1fr);
             }
-            
+
             .modal-content {
                 width: 95%;
                 padding: 15px;
@@ -874,6 +1175,7 @@
         }
     </style>
 </head>
+
 <body>
     <!-- Login Screen -->
     <div class="login-container" id="login-container">
@@ -888,7 +1190,13 @@
             </div>
             <div class="form-group">
                 <label for="login-password">Password</label>
-                <input type="password" id="login-password" class="form-control" placeholder="Enter your password">
+                <div class="password-wrapper">
+                    <input type="password" id="login-password" class="form-control" placeholder="Enter your password">
+                    <button type="button" class="password-toggle" id="toggle-password" title="Show/Hide password"
+                        aria-label="Toggle password visibility">
+                        <i class="fas fa-eye" id="toggle-password-icon"></i>
+                    </button>
+                </div>
             </div>
             <button class="btn btn-primary" id="login-btn" style="width: 100%;">
                 <i class="fas fa-sign-in-alt"></i> Login
@@ -908,7 +1216,7 @@
             <div class="logo">
                 <h1><i class="fas fa-chart-line logo-icon"></i> Kiwami Marketing</h1>
             </div>
-            
+
             <div class="user-profile">
                 <div class="user-avatar">
                     <i class="fas fa-user"></i>
@@ -917,8 +1225,11 @@
                     <div class="user-name">Admin User</div>
                     <div class="user-email">kiwamitech.co.ke</div>
                 </div>
+                <button class="btn-logout" id="logout-btn" title="Logout">
+                    <i class="fas fa-sign-out-alt"></i>
+                </button>
             </div>
-            
+
             <div class="nav-tabs">
                 <div class="nav-tab active" data-tab="calendar">
                     <i class="fas fa-calendar"></i>
@@ -927,7 +1238,7 @@
                     <i class="fas fa-chart-line"></i>
                 </div>
             </div>
-            
+
             <div class="tab-content active" id="calendar-tab">
                 <div class="topics-list" id="topics-list">
                     <div class="topic-item active" data-topic="all">
@@ -936,7 +1247,7 @@
                     </div>
                     <!-- Topics will be dynamically added here -->
                 </div>
-                
+
                 <div class="filters">
                     <div class="filter-group">
                         <h3>Content Type</h3>
@@ -953,7 +1264,7 @@
                             <label for="filter-article">Article</label>
                         </div>
                     </div>
-                    
+
                     <div class="filter-group">
                         <h3>Status</h3>
                         <div class="filter-option">
@@ -971,7 +1282,7 @@
                     </div>
                 </div>
             </div>
-            
+
             <div class="tab-content" id="analytics-tab">
                 <h3>Report Period</h3>
                 <select class="form-control" id="report-period">
@@ -979,7 +1290,7 @@
                     <option value="30" selected>Last 30 days</option>
                     <option value="90">Last 90 days</option>
                 </select>
-                
+
                 <div class="filter-group">
                     <h3>Platform</h3>
                     <div class="filter-option">
@@ -1018,12 +1329,12 @@
                     <h2 class="current-month">July 2023</h2>
                     <button id="next-month"><i class="fas fa-chevron-right"></i></button>
                 </div>
-                
+
                 <div class="notification-bell" id="notification-bell">
                     <i class="fas fa-bell"></i>
                     <span class="notification-badge" id="notification-count">0</span>
                 </div>
-                
+
                 <div class="add-buttons">
                     <button class="btn btn-primary" id="add-topic-btn">
                         <i class="fas fa-plus"></i> Add Topic
@@ -1033,7 +1344,7 @@
                     </button>
                 </div>
             </div>
-            
+
             <!-- Notification Modal -->
             <div class="notification-modal" id="notification-modal">
                 <div class="notification-header">
@@ -1044,47 +1355,152 @@
                     <!-- Notifications will be added here -->
                 </div>
             </div>
-            
+
             <!-- Calendar View (default) -->
             <div id="calendar-view">
                 <!-- Calendar grid will be here -->
                 <div class="calendar-grid" id="calendar-grid"></div>
             </div>
-            
+
             <!-- Analytics Dashboard View (hidden by default) -->
             <div id="analytics-view" style="display: none;">
+
+                <!-- Step 1: API Keys Setup -->
+                <div class="api-keys-panel" id="api-keys-panel">
+                    <div class="api-keys-header" id="api-keys-header" onclick="toggleApiKeysPanel()">
+                        <h3><i class="fas fa-key" style="color:#f39c12"></i> Step 1 — API Credentials &nbsp;<span
+                                class="badge-required">REQUIRED FOR REAL DATA</span></h3>
+                        <i class="fas fa-chevron-down api-toggle-icon" id="api-toggle-icon"></i>
+                    </div>
+                    <div class="api-keys-body" id="api-keys-body">
+                        <div class="api-info-box">
+                            <strong>⚠ Social media APIs require authentication tokens</strong> — you cannot pull real
+                            metrics from a URL alone.
+                            Enter your API credentials below, then click <strong>Save Keys</strong>. Keys are stored
+                            securely in your browser only and sent to the local server when you fetch data.
+                            Each platform link shows where to get a free key.
+                        </div>
+                        <div class="platform-key-grid">
+                            <!-- YouTube -->
+                            <div class="platform-key">
+                                <label><i class="fab fa-youtube" style="color:#ff0000"></i> YouTube API Key <span
+                                        class="key-status-dot" id="dot-youtube"></span></label>
+                                <input type="password" id="key-youtube" class="form-control" placeholder="AIzaSy..."
+                                    oninput="markKeyDot('youtube',this.value)">
+                                <small>Free key from <a href="https://console.cloud.google.com" target="_blank">Google
+                                        Cloud Console</a> → Enable YouTube Data API v3 → Credentials</small>
+                            </div>
+                            <!-- Twitter/X -->
+                            <div class="platform-key">
+                                <label><i class="fab fa-twitter" style="color:#1da1f2"></i> Twitter/X Bearer Token <span
+                                        class="key-status-dot" id="dot-twitter"></span></label>
+                                <input type="password" id="key-twitter" class="form-control" placeholder="AAAA..."
+                                    oninput="markKeyDot('twitter',this.value)">
+                                <small>Get from <a href="https://developer.twitter.com/en/portal"
+                                        target="_blank">Twitter Developer Portal</a> → Your App → Keys and
+                                    Tokens</small>
+                            </div>
+                            <!-- Facebook -->
+                            <div class="platform-key">
+                                <label><i class="fab fa-facebook" style="color:#3b5998"></i> Facebook Page Access Token
+                                    <span class="key-status-dot" id="dot-facebook"></span></label>
+                                <input type="password" id="key-facebook" class="form-control" placeholder="EAAx..."
+                                    oninput="markKeyDot('facebook',this.value)">
+                                <small>From <a href="https://developers.facebook.com/tools/explorer"
+                                        target="_blank">Graph API Explorer</a> → select your Page → Generate Token with
+                                    pages_read_engagement scope</small>
+                            </div>
+                            <!-- Instagram -->
+                            <div class="platform-key">
+                                <label><i class="fab fa-instagram" style="color:#e4405f"></i> Instagram Access Token
+                                    <span class="key-status-dot" id="dot-instagram"></span></label>
+                                <input type="password" id="key-instagram" class="form-control" placeholder="EAAx..."
+                                    oninput="markKeyDot('instagram',this.value)">
+                                <small>Use the same Facebook token above. Your Instagram must be a <strong>Business
+                                        account</strong> connected to a Facebook Page.</small>
+                            </div>
+                            <!-- LinkedIn -->
+                            <div class="platform-key">
+                                <label><i class="fab fa-linkedin" style="color:#0077b5"></i> LinkedIn OAuth Token <span
+                                        class="key-status-dot" id="dot-linkedin"></span></label>
+                                <input type="password" id="key-linkedin" class="form-control" placeholder="AQX..."
+                                    oninput="markKeyDot('linkedin',this.value)">
+                                <small>From <a href="https://www.linkedin.com/developers/apps" target="_blank">LinkedIn
+                                        Developer Apps</a> → OAuth 2.0 → r_organization_social scope</small>
+                            </div>
+                            <!-- TikTok -->
+                            <div class="platform-key">
+                                <label><i class="fab fa-tiktok"></i> TikTok Client Token <span class="key-status-dot"
+                                        id="dot-tiktok"></span></label>
+                                <input type="password" id="key-tiktok" class="form-control" placeholder="..."
+                                    oninput="markKeyDot('tiktok',this.value)">
+                                <small>From <a href="https://developers.tiktok.com" target="_blank">TikTok for
+                                        Developers</a> → Requires approved app + Sandbox/Production access</small>
+                            </div>
+                        </div>
+                        <button class="btn btn-success" onclick="saveApiKeys()">
+                            <i class="fas fa-save"></i> Save API Keys
+                        </button>
+                        <button class="btn" style="background:#95a5a6;color:white;margin-left:10px;"
+                            onclick="clearApiKeys()">
+                            <i class="fas fa-trash"></i> Clear All Keys
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Step 2: Profile URLs + Fetch -->
                 <div class="profile-link-form">
-                    <h3>Social Media Profiles</h3>
-                    <p>Enter your social media profile URLs to fetch analytics data</p>
+                    <h3><i class="fas fa-link" style="color:#3498db"></i> Step 2 — Social Media Profile URLs</h3>
+                    <p style="color:var(--gray);margin-bottom:15px;">Enter the public URL of each account you want to
+                        track. Only fill in the platforms you use.</p>
                     <div class="form-group">
-                        <label for="facebook-profile">Facebook Profile URL</label>
-                        <input type="url" id="facebook-profile" class="form-control" placeholder="https://www.facebook.com/yourprofile">
+                        <label for="facebook-profile"><i class="fab fa-facebook" style="color:#3b5998"></i> Facebook
+                            Page URL</label>
+                        <input type="url" id="facebook-profile" class="form-control"
+                            placeholder="https://www.facebook.com/yourpage">
                     </div>
                     <div class="form-group">
-                        <label for="instagram-profile">Instagram Profile URL</label>
-                        <input type="url" id="instagram-profile" class="form-control" placeholder="https://www.instagram.com/yourprofile">
+                        <label for="instagram-profile"><i class="fab fa-instagram" style="color:#e4405f"></i> Instagram
+                            Profile URL</label>
+                        <input type="url" id="instagram-profile" class="form-control"
+                            placeholder="https://www.instagram.com/yourprofile">
                     </div>
                     <div class="form-group">
-                        <label for="twitter-profile">Twitter Profile URL</label>
-                        <input type="url" id="twitter-profile" class="form-control" placeholder="https://twitter.com/yourprofile">
+                        <label for="twitter-profile"><i class="fab fa-twitter" style="color:#1da1f2"></i> Twitter / X
+                            Profile URL</label>
+                        <input type="url" id="twitter-profile" class="form-control"
+                            placeholder="https://twitter.com/yourhandle">
                     </div>
                     <div class="form-group">
-                        <label for="linkedin-profile">LinkedIn Profile URL</label>
-                        <input type="url" id="linkedin-profile" class="form-control" placeholder="https://www.linkedin.com/in/yourprofile">
+                        <label for="linkedin-profile"><i class="fab fa-linkedin" style="color:#0077b5"></i> LinkedIn
+                            Company URL</label>
+                        <input type="url" id="linkedin-profile" class="form-control"
+                            placeholder="https://www.linkedin.com/company/yourcompany">
                     </div>
                     <div class="form-group">
-                        <label for="youtube-profile">YouTube Profile URL</label>
-                        <input type="url" id="youtube-profile" class="form-control" placeholder="https://www.youtube.com/yourchannel">
+                        <label for="youtube-profile"><i class="fab fa-youtube" style="color:#ff0000"></i> YouTube
+                            Channel URL</label>
+                        <input type="url" id="youtube-profile" class="form-control"
+                            placeholder="https://www.youtube.com/@yourchannel">
                     </div>
                     <div class="form-group">
-                        <label for="tiktok-profile">TikTok Profile URL</label>
-                        <input type="url" id="tiktok-profile" class="form-control" placeholder="https://www.tiktok.com/@yourprofile">
+                        <label for="tiktok-profile"><i class="fab fa-tiktok"></i> TikTok Profile URL</label>
+                        <input type="url" id="tiktok-profile" class="form-control"
+                            placeholder="https://www.tiktok.com/@yourprofile">
                     </div>
                     <button class="btn btn-primary" id="fetch-analytics">
-                        <i class="fas fa-sync"></i> Fetch Analytics
+                        <i class="fas fa-sync" id="fetch-icon"></i> Fetch Real Analytics
                     </button>
+                    <p style="font-size:.8rem;color:var(--gray);margin-top:8px;">Data is fetched live from each
+                        platform's official API using your credentials above.</p>
                 </div>
-                
+
+                <!-- Platform Connection Status (shown after fetch) -->
+                <div class="connection-status-panel" id="connection-status-panel">
+                    <h3><i class="fas fa-satellite-dish"></i> Platform Connection Status</h3>
+                    <div class="platform-status-grid" id="platform-status-grid"></div>
+                </div>
+
                 <div class="manual-stats">
                     <h3>Manual Analytics Input</h3>
                     <p>Enter your social media statistics manually</p>
@@ -1095,33 +1511,33 @@
                         <i class="fas fa-sync"></i> Update Statistics
                     </button>
                 </div>
-                
+
                 <div class="dashboard">
                     <div class="metric-card">
                         <h3>Total Posts</h3>
-                        <div class="metric-value" id="total-posts">42</div>
-                        <div class="metric-change">+5% from last period</div>
+                        <div class="metric-value" id="total-posts">—</div>
+                        <div class="metric-change" id="total-posts-change">No data yet</div>
                     </div>
-                    
+
                     <div class="metric-card">
                         <h3>Engagement Rate</h3>
-                        <div class="metric-value" id="engagement-rate">7.2%</div>
-                        <div class="metric-change">+1.3% from last period</div>
+                        <div class="metric-value" id="engagement-rate">—</div>
+                        <div class="metric-change" id="engagement-rate-change">No data yet</div>
                     </div>
-                    
+
                     <div class="metric-card">
                         <h3>Current Followers</h3>
-                        <div class="metric-value" id="total-followers">24.5K</div>
-                        <div class="metric-change">+1.2K from last month</div>
+                        <div class="metric-value" id="total-followers">—</div>
+                        <div class="metric-change" id="total-followers-change">No data yet</div>
                     </div>
-                    
+
                     <div class="metric-card">
                         <h3>Total Views</h3>
-                        <div class="metric-value" id="total-views">156K</div>
-                        <div class="metric-change">+12% from last period</div>
+                        <div class="metric-value" id="total-views">—</div>
+                        <div class="metric-change" id="total-views-change">No data yet</div>
                     </div>
                 </div>
-                
+
                 <div class="chart-row">
                     <div class="chart-container">
                         <canvas id="performance-chart"></canvas>
@@ -1130,11 +1546,11 @@
                         <canvas id="platform-chart"></canvas>
                     </div>
                 </div>
-                
+
                 <div class="chart-container">
                     <canvas id="audience-chart"></canvas>
                 </div>
-                
+
                 <div class="platform-metrics" id="platform-metrics">
                     <!-- Platform metrics will be added here -->
                 </div>
@@ -1154,27 +1570,29 @@
                     <h3 id="content-modal-title">Add New Content</h3>
                     <span class="close">&times;</span>
                 </div>
-                
+
                 <form id="content-form">
                     <input type="hidden" id="content-id">
-                    
+
                     <div class="form-group">
                         <label for="content-title">Title/Idea</label>
-                        <input type="text" id="content-title" class="form-control" placeholder="e.g., How AI is transforming QA" required>
+                        <input type="text" id="content-title" class="form-control"
+                            placeholder="e.g., How AI is transforming QA" required>
                     </div>
-                    
+
                     <div class="form-group">
                         <label for="content-description">Description</label>
-                        <textarea id="content-description" class="form-control" placeholder="Describe your content..."></textarea>
+                        <textarea id="content-description" class="form-control"
+                            placeholder="Describe your content..."></textarea>
                     </div>
-                    
+
                     <div class="form-group">
                         <label for="content-topic">Topic</label>
                         <select id="content-topic" class="form-control" required>
                             <!-- Options will be populated dynamically -->
                         </select>
                     </div>
-                    
+
                     <div class="form-group">
                         <label for="content-type">Content Type</label>
                         <select id="content-type" class="form-control" required>
@@ -1183,12 +1601,12 @@
                             <option value="article">Article</option>
                         </select>
                     </div>
-                    
+
                     <div class="form-group">
                         <label for="content-date">Scheduled Date</label>
                         <input type="date" id="content-date" class="form-control" required>
                     </div>
-                    
+
                     <div class="form-group">
                         <label>Platforms</label>
                         <div class="platform-checkboxes">
@@ -1218,7 +1636,7 @@
                             </div>
                         </div>
                     </div>
-                    
+
                     <div class="form-group">
                         <label>Media Upload</label>
                         <div class="media-upload" id="media-upload-area">
@@ -1231,10 +1649,11 @@
                         </div>
                         <div class="media-preview-container">
                             <img id="media-preview" class="media-preview" alt="Media preview">
-                            <button type="button" class="remove-media" id="remove-media" style="display: none;">&times;</button>
+                            <button type="button" class="remove-media" id="remove-media"
+                                style="display: none;">&times;</button>
                         </div>
                     </div>
-                    
+
                     <div class="form-group">
                         <label>Status</label>
                         <div class="status-buttons">
@@ -1244,7 +1663,7 @@
                         </div>
                         <input type="hidden" id="content-status" value="planned">
                     </div>
-                    
+
                     <div class="form-group" style="display: flex; gap: 10px; flex-wrap: wrap;">
                         <button type="submit" class="btn btn-primary">Save Content</button>
                         <button type="button" class="btn btn-success" id="download-content">
@@ -1267,13 +1686,14 @@
                     <h3>Add New Topic</h3>
                     <span class="close">&times;</span>
                 </div>
-                
+
                 <form id="topic-form">
                     <div class="form-group">
                         <label for="topic-name">Topic Name</label>
-                        <input type="text" id="topic-name" class="form-control" placeholder="e.g., DevOps Trends" required>
+                        <input type="text" id="topic-name" class="form-control" placeholder="e.g., DevOps Trends"
+                            required>
                     </div>
-                    
+
                     <div class="form-group">
                         <label for="topic-icon">Icon</label>
                         <select id="topic-icon" class="form-control" required>
@@ -1284,7 +1704,7 @@
                             <option value="fa-tools">Tools</option>
                         </select>
                     </div>
-                    
+
                     <button type="submit" class="btn btn-primary">Save Topic</button>
                 </form>
             </div>
@@ -1296,7 +1716,7 @@
                     <h3 id="detail-title">Content Details</h3>
                     <span class="close">&times;</span>
                 </div>
-                
+
                 <div class="content-details">
                     <p><strong>Topic:</strong> <span id="detail-topic"></span></p>
                     <p><strong>Type:</strong> <span id="detail-type"></span></p>
@@ -1304,12 +1724,12 @@
                     <p><strong>Scheduled Date:</strong> <span id="detail-date"></span></p>
                     <p><strong>Platforms:</strong> <span id="detail-platforms"></span></p>
                     <p><strong>Status:</strong> <span id="detail-status"></span></p>
-                    
+
                     <div id="detail-media-container" style="margin-top: 15px; display: none;">
                         <strong>Media:</strong>
                         <img id="detail-media" style="max-width: 100%; margin-top: 10px; border-radius: 4px;">
                     </div>
-                    
+
                     <div class="social-options">
                         <h4>Post to Social Media</h4>
                         <div class="social-option">
@@ -1343,7 +1763,7 @@
                             </button>
                         </div>
                     </div>
-                    
+
                     <div class="post-link-form" id="post-link-form">
                         <h4>Confirm Posting</h4>
                         <div class="form-group">
@@ -1354,7 +1774,7 @@
                             <i class="fas fa-check"></i> Confirm & Update Status
                         </button>
                     </div>
-                    
+
                     <div class="action-buttons" style="margin-top: 20px; display: flex; gap: 10px; flex-wrap: wrap;">
                         <button class="btn btn-primary" id="edit-content-btn">
                             <i class="fas fa-edit"></i> Edit
@@ -1379,30 +1799,52 @@
 
     <script>
         // Initialize the application
-        document.addEventListener('DOMContentLoaded', function() {
-            // Check if user is already logged in
-            const isLoggedIn = localStorage.getItem('isLoggedIn') === 'true';
+        document.addEventListener('DOMContentLoaded', function () {
+            // Check if user is already logged in (sessionStorage is cleared when tab is closed)
+            const isLoggedIn = sessionStorage.getItem('isLoggedIn') === 'true';
             if (isLoggedIn) {
-                document.getElementById('login-container').style.display = 'none';
-                document.getElementById('app-container').style.display = 'flex';
                 initializeApp();
             } else {
                 // Set up login functionality
-                document.getElementById('login-btn').addEventListener('click', function() {
-                    const email = document.getElementById('login-email').value;
+                document.getElementById('login-btn').addEventListener('click', function () {
+                    const email = document.getElementById('login-email').value.trim();
                     const password = document.getElementById('login-password').value;
-                    
-                    if (email === 'kiwamitech.co.ke' && password === 'kiwami@2025') {
-                        localStorage.setItem('isLoggedIn', 'true');
-                        document.getElementById('login-container').style.display = 'none';
-                        document.getElementById('app-container').style.display = 'flex';
+
+                    // Allow both the configured domain and a standard format if needed
+                    if ((email === 'kiwamitech.co.ke' || email === 'admin@kiwamitech.co.ke') && password === 'kiwami@2025') {
+                        sessionStorage.setItem('isLoggedIn', 'true');
+                        document.documentElement.classList.remove('logged-out');
+                        document.documentElement.classList.add('logged-in');
                         initializeApp();
                     } else {
                         alert('Invalid credentials. Please try again.');
                     }
                 });
+
+                // Password visibility toggle
+                document.getElementById('toggle-password').addEventListener('click', function () {
+                    const pwdInput = document.getElementById('login-password');
+                    const icon = document.getElementById('toggle-password-icon');
+                    if (pwdInput.type === 'password') {
+                        pwdInput.type = 'text';
+                        icon.classList.remove('fa-eye');
+                        icon.classList.add('fa-eye-slash');
+                    } else {
+                        pwdInput.type = 'password';
+                        icon.classList.remove('fa-eye-slash');
+                        icon.classList.add('fa-eye');
+                    }
+                });
+
+                // Allow Enter key on login form
+                document.getElementById('login-password').addEventListener('keydown', function (e) {
+                    if (e.key === 'Enter') document.getElementById('login-btn').click();
+                });
+                document.getElementById('login-email').addEventListener('keydown', function (e) {
+                    if (e.key === 'Enter') document.getElementById('login-btn').click();
+                });
             }
-            
+
             function initializeApp() {
                 // Load content from localStorage or use sample data
                 let contentItems = JSON.parse(localStorage.getItem('contentItems')) || [];
@@ -1411,47 +1853,47 @@
                     { id: 'qa', name: 'Software Testing / QA', icon: 'fa-bug' },
                     { id: 'ai', name: 'AI Updates', icon: 'fa-robot' }
                 ];
-                
+
                 let currentContentId = null;
                 let currentDate = new Date();
                 let currentMedia = null;
                 let currentMediaFile = null;
                 let activeTopicFilter = 'all';
                 let selectedPlatform = null;
-                
+
                 // Initialize analytics charts
                 let performanceChart, platformChart, audienceChart;
                 initializeCharts();
-                
+
                 // Initialize the application
                 renderCalendar(currentDate);
                 renderTopics();
                 populateTopicDropdown();
                 setupManualStatsInputs();
                 setupPlatformMetrics();
-                
+
                 // Set up event listeners
                 setupEventListeners();
-                
+
                 // Check for daily notifications
                 checkDailyNotifications();
-                
-                // Function to initialize charts
+
+                // Function to initialize charts (empty until data is fetched)
                 function initializeCharts() {
                     const ctx1 = document.getElementById('performance-chart').getContext('2d');
                     performanceChart = new Chart(ctx1, {
                         type: 'line',
                         data: {
-                            labels: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul'],
+                            labels: [],
                             datasets: [{
                                 label: 'Engagement Rate',
-                                data: [5.2, 5.8, 6.3, 6.1, 6.7, 7.0, 7.2],
+                                data: [],
                                 borderColor: '#3498db',
                                 tension: 0.1,
                                 fill: false
                             }, {
                                 label: 'Follower Growth (K)',
-                                data: [18, 19, 20, 21, 22, 23, 24.5],
+                                data: [],
                                 borderColor: '#2ecc71',
                                 tension: 0.1,
                                 fill: false
@@ -1464,18 +1906,19 @@
                                 title: {
                                     display: true,
                                     text: 'Performance Trends'
-                                }
+                                },
+                                legend: { display: true }
                             }
                         }
                     });
-                    
+
                     const ctx2 = document.getElementById('platform-chart').getContext('2d');
                     platformChart = new Chart(ctx2, {
                         type: 'doughnut',
                         data: {
                             labels: ['Facebook', 'Instagram', 'Twitter', 'LinkedIn', 'YouTube', 'TikTok'],
                             datasets: [{
-                                data: [25, 20, 15, 12, 18, 10],
+                                data: [0, 0, 0, 0, 0, 0],
                                 backgroundColor: [
                                     '#3b5998',
                                     '#e4405f',
@@ -1492,12 +1935,12 @@
                             plugins: {
                                 title: {
                                     display: true,
-                                    text: 'Platform Distribution'
+                                    text: 'Platform Follower Distribution'
                                 }
                             }
                         }
                     });
-                    
+
                     const ctx3 = document.getElementById('audience-chart').getContext('2d');
                     audienceChart = new Chart(ctx3, {
                         type: 'bar',
@@ -1505,7 +1948,7 @@
                             labels: ['18-24', '25-34', '35-44', '45-54', '55+'],
                             datasets: [{
                                 label: 'Age Distribution (%)',
-                                data: [30, 45, 15, 7, 3],
+                                data: [0, 0, 0, 0, 0],
                                 backgroundColor: '#3498db'
                             }]
                         },
@@ -1517,16 +1960,19 @@
                                     display: true,
                                     text: 'Audience Demographics'
                                 }
+                            },
+                            scales: {
+                                y: { beginAtZero: true, max: 100 }
                             }
                         }
                     });
                 }
-                
+
                 // Function to setup manual stats inputs
                 function setupManualStatsInputs() {
                     const statsGrid = document.getElementById('stats-grid');
                     statsGrid.innerHTML = '';
-                    
+
                     const platforms = [
                         { id: 'fb', name: 'Facebook' },
                         { id: 'ig', name: 'Instagram' },
@@ -1535,36 +1981,36 @@
                         { id: 'yt', name: 'YouTube' },
                         { id: 'tt', name: 'TikTok' }
                     ];
-                    
+
                     const metrics = ['followers', 'views', 'likes', 'reposts'];
-                    
+
                     platforms.forEach(platform => {
                         metrics.forEach(metric => {
                             const formGroup = document.createElement('div');
                             formGroup.className = 'form-group';
-                            
+
                             const label = document.createElement('label');
                             label.htmlFor = `${platform.id}-${metric}`;
                             label.textContent = `${platform.name} ${metric.charAt(0).toUpperCase() + metric.slice(1)}`;
-                            
+
                             const input = document.createElement('input');
                             input.type = 'number';
                             input.id = `${platform.id}-${metric}`;
                             input.className = 'form-control';
                             input.placeholder = '0';
-                            
+
                             formGroup.appendChild(label);
                             formGroup.appendChild(input);
                             statsGrid.appendChild(formGroup);
                         });
                     });
                 }
-                
+
                 // Function to setup platform metrics
                 function setupPlatformMetrics() {
                     const platformMetrics = document.getElementById('platform-metrics');
                     platformMetrics.innerHTML = '';
-                    
+
                     const platforms = [
                         { id: 'facebook', name: 'Facebook', icon: 'fa-facebook', color: '#3b5998' },
                         { id: 'instagram', name: 'Instagram', icon: 'fa-instagram', color: '#e4405f' },
@@ -1573,145 +2019,146 @@
                         { id: 'youtube', name: 'YouTube', icon: 'fa-youtube', color: '#ff0000' },
                         { id: 'tiktok', name: 'TikTok', icon: 'fa-tiktok', color: '#000000' }
                     ];
-                    
+
                     platforms.forEach(platform => {
                         const platformMetric = document.createElement('div');
                         platformMetric.className = 'platform-metric';
-                        
+
                         const heading = document.createElement('h4');
                         heading.innerHTML = `<i class="fab ${platform.icon}" style="color: ${platform.color};"></i> ${platform.name}`;
-                        
+
                         const metricGrid = document.createElement('div');
                         metricGrid.className = 'metric-grid';
-                        
+
                         const metrics = [
-                            { value: '12.5K', label: 'Followers' },
-                            { value: '4.2%', label: 'Engagement' },
-                            { value: '64K', label: 'Views' },
-                            { value: '1.2K', label: 'Likes' }
+                            { value: '—', label: 'Followers', dataKey: 'followers' },
+                            { value: '—', label: 'Engagement', dataKey: 'engagement' },
+                            { value: '—', label: 'Views', dataKey: 'views' },
+                            { value: '—', label: 'Likes', dataKey: 'likes' }
                         ];
-                        
+
                         metrics.forEach(metric => {
                             const metricItem = document.createElement('div');
                             metricItem.className = 'metric-item';
-                            
+
                             const value = document.createElement('span');
                             value.className = 'value';
+                            value.dataset.key = metric.dataKey;
                             value.textContent = metric.value;
-                            
+
                             const label = document.createElement('span');
                             label.className = 'label';
                             label.textContent = metric.label;
-                            
+
                             metricItem.appendChild(value);
                             metricItem.appendChild(label);
                             metricGrid.appendChild(metricItem);
                         });
-                        
+
                         platformMetric.appendChild(heading);
                         platformMetric.appendChild(metricGrid);
                         platformMetrics.appendChild(platformMetric);
                     });
                 }
-                
+
                 // Function to check for daily notifications
                 function checkDailyNotifications() {
                     const today = new Date();
                     const todayStr = today.toISOString().split('T')[0];
-                    
+
                     // Get content scheduled for today
                     const todaysContent = contentItems.filter(item => item.date === todayStr && item.status !== 'posted');
-                    
+
                     if (todaysContent.length > 0) {
                         // Show notification badge
                         document.getElementById('notification-count').textContent = todaysContent.length;
-                        
+
                         // Populate notification list
                         const notificationList = document.getElementById('notification-list');
                         notificationList.innerHTML = '';
-                        
+
                         todaysContent.forEach(content => {
                             const notificationItem = document.createElement('div');
                             notificationItem.className = 'notification-item';
-                            
+
                             const icon = document.createElement('i');
                             icon.className = 'notification-icon fas fa-calendar-check';
-                            
+
                             const contentDiv = document.createElement('div');
                             contentDiv.className = 'notification-content';
-                            
+
                             const text = document.createElement('p');
                             text.textContent = `"${content.title}" is scheduled for today`;
-                            
+
                             const time = document.createElement('div');
                             time.className = 'notification-time';
                             time.textContent = 'Today';
-                            
+
                             contentDiv.appendChild(text);
                             contentDiv.appendChild(time);
-                            
+
                             notificationItem.appendChild(icon);
                             notificationItem.appendChild(contentDiv);
                             notificationList.appendChild(notificationItem);
                         });
                     }
                 }
-                
+
                 // Function to render the calendar
                 function renderCalendar(date) {
                     const calendarGrid = document.getElementById('calendar-grid');
                     calendarGrid.innerHTML = '';
-                    
+
                     const monthNames = ["January", "February", "March", "April", "May", "June",
                         "July", "August", "September", "October", "November", "December"];
-                    
-                    document.querySelector('.current-month').textContent = 
+
+                    document.querySelector('.current-month').textContent =
                         `${monthNames[date.getMonth()]} ${date.getFullYear()}`;
-                    
+
                     // Create calendar days
                     const firstDay = new Date(date.getFullYear(), date.getMonth(), 1);
                     const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0);
-                    
+
                     // Add empty cells for days before the first day of the month
                     for (let i = 0; i < firstDay.getDay(); i++) {
                         const emptyDay = document.createElement('div');
                         emptyDay.classList.add('calendar-day', 'empty');
                         calendarGrid.appendChild(emptyDay);
                     }
-                    
+
                     // Create cells for each day of the month
                     for (let i = 1; i <= lastDay.getDate(); i++) {
                         const dayElement = document.createElement('div');
                         dayElement.classList.add('calendar-day');
-                        
+
                         const dayHeader = document.createElement('div');
                         dayHeader.classList.add('day-header');
-                        
+
                         const dayNumber = document.createElement('span');
                         dayNumber.classList.add('day-number');
                         dayNumber.textContent = i;
-                        
+
                         const weekday = document.createElement('span');
                         weekday.classList.add('weekday');
                         const dayOfWeek = new Date(date.getFullYear(), date.getMonth(), i).getDay();
                         const weekdays = ["Sun", "Mon", 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
                         weekday.textContent = weekdays[dayOfWeek];
-                        
+
                         dayHeader.appendChild(dayNumber);
                         dayHeader.appendChild(weekday);
-                        
+
                         const contentItemsContainer = document.createElement('div');
                         contentItemsContainer.classList.add('content-items');
-                        
+
                         // Add content items for this day
                         const currentDateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(i).padStart(2, '0')}`;
                         let itemsForDay = contentItems.filter(item => item.date === currentDateStr);
-                        
+
                         // Apply topic filter if not "all"
                         if (activeTopicFilter !== 'all') {
                             itemsForDay = itemsForDay.filter(item => item.topic === activeTopicFilter);
                         }
-                        
+
                         if (itemsForDay.length === 0) {
                             const noContent = document.createElement('p');
                             noContent.textContent = 'No content scheduled';
@@ -1723,34 +2170,34 @@
                                 const contentElement = document.createElement('div');
                                 contentElement.classList.add('content-item', item.status);
                                 contentElement.dataset.id = item.id;
-                                
+
                                 let icon = '';
                                 if (item.type === 'video') icon = '<i class="fas fa-video"></i>';
                                 else if (item.type === 'poster') icon = '<i class="fas fa-image"></i>';
                                 else if (item.type === 'article') icon = '<i class="fas fa-file-alt"></i>';
-                                
+
                                 contentElement.innerHTML = `${icon} ${item.title}`;
                                 contentItemsContainer.appendChild(contentElement);
-                                
+
                                 // Add click event to show details
                                 contentElement.addEventListener('click', () => {
                                     showContentDetails(item.id);
                                 });
                             });
                         }
-                        
+
                         dayElement.appendChild(dayHeader);
                         dayElement.appendChild(contentItemsContainer);
                         calendarGrid.appendChild(dayElement);
                     }
                 }
-                
+
                 // Function to render topics in sidebar
                 function renderTopics() {
                     const topicsList = document.getElementById('topics-list');
                     // Clear existing topics except "All Topics"
                     topicsList.innerHTML = '<div class="topic-item active" data-topic="all"><i class="fas fa-th-large"></i><span>All Topics</span></div>';
-                    
+
                     // Add topics from storage
                     topics.forEach(topic => {
                         const topicElement = document.createElement('div');
@@ -1759,10 +2206,10 @@
                         topicElement.innerHTML = `<i class="fas ${topic.icon}"></i><span>${topic.name}</span>`;
                         topicsList.appendChild(topicElement);
                     });
-                    
+
                     // Add event listeners to topic items
                     document.querySelectorAll('.topic-item').forEach(item => {
-                        item.addEventListener('click', function() {
+                        item.addEventListener('click', function () {
                             document.querySelectorAll('.topic-item').forEach(i => i.classList.remove('active'));
                             this.classList.add('active');
                             activeTopicFilter = this.dataset.topic;
@@ -1770,12 +2217,12 @@
                         });
                     });
                 }
-                
+
                 // Function to populate topic dropdown in content form
                 function populateTopicDropdown() {
                     const topicDropdown = document.getElementById('content-topic');
                     topicDropdown.innerHTML = '';
-                    
+
                     topics.forEach(topic => {
                         const option = document.createElement('option');
                         option.value = topic.id;
@@ -1783,26 +2230,26 @@
                         topicDropdown.appendChild(option);
                     });
                 }
-                
+
                 // Function to show content details
                 function showContentDetails(contentId) {
                     const content = contentItems.find(item => item.id === contentId);
                     if (!content) return;
-                    
+
                     currentContentId = contentId;
-                    
+
                     // Populate details
                     document.getElementById('detail-title').textContent = content.title;
-                    document.getElementById('detail-topic').textContent = 
+                    document.getElementById('detail-topic').textContent =
                         topics.find(t => t.id === content.topic)?.name || content.topic;
-                    document.getElementById('detail-type').textContent = 
+                    document.getElementById('detail-type').textContent =
                         content.type.charAt(0).toUpperCase() + content.type.slice(1);
                     document.getElementById('detail-description').textContent = content.description || 'No description';
                     document.getElementById('detail-date').textContent = content.date;
                     document.getElementById('detail-platforms').textContent = content.platforms.join(', ');
-                    document.getElementById('detail-status').textContent = 
+                    document.getElementById('detail-status').textContent =
                         content.status.charAt(0).toUpperCase() + content.status.slice(1);
-                    
+
                     // Show media if available
                     const mediaContainer = document.getElementById('detail-media-container');
                     const mediaElement = document.getElementById('detail-media');
@@ -1812,22 +2259,22 @@
                     } else {
                         mediaContainer.style.display = 'none';
                     }
-                    
+
                     // Hide post link form initially
                     document.getElementById('post-link-form').style.display = 'none';
-                    
+
                     // Show modal
                     document.getElementById('detail-modal').style.display = 'flex';
                 }
-                
+
                 // Function to show toast notification
                 function showToast(message, isError = false) {
                     const toast = document.getElementById('toast');
                     const toastIcon = document.getElementById('toast-icon');
                     const toastMessage = document.getElementById('toast-message');
-                    
+
                     toastMessage.textContent = message;
-                    
+
                     if (isError) {
                         toast.classList.add('error');
                         toastIcon.className = 'fas fa-exclamation-circle';
@@ -1835,14 +2282,14 @@
                         toast.classList.remove('error');
                         toastIcon.className = 'fas fa-check-circle';
                     }
-                    
+
                     toast.classList.add('show');
-                    
+
                     setTimeout(() => {
                         toast.classList.remove('show');
                     }, 3000);
                 }
-                
+
                 // Function to reset the content form
                 function resetContentForm() {
                     document.getElementById('content-form').reset();
@@ -1858,7 +2305,7 @@
                     currentMedia = null;
                     currentMediaFile = null;
                 }
-                
+
                 // Function to populate the content form for editing
                 function populateContentForm(content) {
                     document.getElementById('content-id').value = content.id;
@@ -1868,12 +2315,12 @@
                     document.getElementById('content-type').value = content.type;
                     document.getElementById('content-date').value = content.date;
                     document.getElementById('content-status').value = content.status;
-                    
+
                     // Set platforms
                     document.querySelectorAll('.platform-checkbox input').forEach(checkbox => {
                         checkbox.checked = content.platforms.includes(checkbox.value);
                     });
-                    
+
                     // Set status buttons
                     document.querySelectorAll('.status-btn').forEach(btn => {
                         btn.classList.remove('active');
@@ -1881,7 +2328,7 @@
                             btn.classList.add('active');
                         }
                     });
-                    
+
                     // Set media if available
                     if (content.media) {
                         document.getElementById('media-preview').src = content.media;
@@ -1889,24 +2336,24 @@
                         document.getElementById('remove-media').style.display = 'block';
                         currentMedia = content.media;
                     }
-                    
+
                     document.getElementById('content-modal-title').textContent = 'Edit Content';
                 }
-                
+
                 // Function to copy text content for social media
                 function copyTextContent(content, platform) {
                     // Create a formatted version of the content for the specific platform
                     let formattedContent = '';
-                    
+
                     // Add title and description (excluding dates and status)
                     formattedContent = `${content.title}\n\n`;
-                    
+
                     if (content.description) {
                         formattedContent += `${content.description}\n\n`;
                     }
-                    
+
                     // Add platform-specific hashtags
-                    switch(platform) {
+                    switch (platform) {
                         case 'facebook':
                             formattedContent += `#Tech #${content.topic.charAt(0).toUpperCase() + content.topic.slice(1)} #Facebook`;
                             break;
@@ -1928,7 +2375,7 @@
                         default:
                             formattedContent += `#Tech #${content.topic.charAt(0).toUpperCase() + content.topic.slice(1)}`;
                     }
-                    
+
                     // Copy to clipboard
                     navigator.clipboard.writeText(formattedContent).then(() => {
                         showToast(`Text content copied for ${platform.charAt(0).toUpperCase() + platform.slice(1)}!`);
@@ -1937,14 +2384,14 @@
                         console.error('Copy error:', err);
                     });
                 }
-                
+
                 // Function to download media
                 function downloadMedia(content) {
                     if (!content.media) {
                         showToast('No media to download', true);
                         return;
                     }
-                    
+
                     // Create a download link for the media
                     const a = document.createElement('a');
                     a.href = content.media;
@@ -1952,10 +2399,10 @@
                     document.body.appendChild(a);
                     a.click();
                     document.body.removeChild(a);
-                    
+
                     showToast('Media downloaded successfully!');
                 }
-                
+
                 // Function to download content
                 function downloadContent(content) {
                     // Create a text representation of the content
@@ -1973,7 +2420,7 @@ Status: ${content.status.charAt(0).toUpperCase() + content.status.slice(1)}
 
 ${content.media ? 'Media attached: Yes' : 'Media attached: No'}
                     `.trim();
-                    
+
                     // Create a blob and download link
                     const blob = new Blob([textContent], { type: 'text/plain' });
                     const url = URL.createObjectURL(blob);
@@ -1984,15 +2431,15 @@ ${content.media ? 'Media attached: Yes' : 'Media attached: No'}
                     a.click();
                     document.body.removeChild(a);
                     URL.revokeObjectURL(url);
-                    
+
                     showToast('Content downloaded successfully!');
                 }
-                
+
                 // Function to open social media platform
                 function openSocialMediaPlatform(platform, content) {
                     let url = '';
-                    
-                    switch(platform) {
+
+                    switch (platform) {
                         case 'facebook':
                             url = 'https://www.facebook.com/';
                             break;
@@ -2012,151 +2459,328 @@ ${content.media ? 'Media attached: Yes' : 'Media attached: No'}
                             url = 'https://www.tiktok.com/';
                             break;
                     }
-                    
+
                     // Copy text content to clipboard
                     copyTextContent(content, platform);
-                    
+
                     // Open platform in new tab
                     window.open(url, '_blank');
-                    
+
                     // Show post link form
                     document.getElementById('post-link-form').style.display = 'block';
                     selectedPlatform = platform;
                 }
-                
-                // Function to fetch analytics from social media profiles
-                function fetchSocialMediaAnalytics() {
-                    const facebookProfile = document.getElementById('facebook-profile').value;
-                    const instagramProfile = document.getElementById('instagram-profile').value;
-                    const twitterProfile = document.getElementById('twitter-profile').value;
-                    const linkedinProfile = document.getElementById('linkedin-profile').value;
-                    const youtubeProfile = document.getElementById('youtube-profile').value;
-                    const tiktokProfile = document.getElementById('tiktok-profile').value;
-                    
-                    // In a real implementation, this would make API calls to fetch analytics data
-                    // For demonstration, we'll simulate fetching data
-                    
-                    showToast('Fetching analytics data...');
-                    
-                    // Simulate API call delay
-                    setTimeout(() => {
-                        // Update metrics with simulated data
-                        document.getElementById('total-posts').textContent = '48';
-                        document.getElementById('engagement-rate').textContent = '7.8%';
-                        document.getElementById('total-followers').textContent = '26.2K';
-                        document.getElementById('total-views').textContent = '168K';
-                        
-                        // Update platform metrics
-                        const platforms = document.querySelectorAll('.platform-metric');
-                        platforms[0].querySelector('.value:first-child').textContent = '13.2K';
-                        platforms[1].querySelector('.value:first-child').textContent = '8.7K';
-                        platforms[2].querySelector('.value:first-child').textContent = '2.3K';
-                        platforms[3].querySelector('.value:first-child').textContent = '3.4K';
-                        platforms[4].querySelector('.value:first-child').textContent = '5.2K';
-                        platforms[5].querySelector('.value:first-child').textContent = '1.8K';
-                        
-                        showToast('Analytics data updated successfully!');
-                    }, 2000);
+
+                // ── API Key helpers (stored in localStorage) ───────────────────
+                const PLATFORMS = ['youtube', 'twitter', 'facebook', 'instagram', 'linkedin', 'tiktok'];
+
+                function saveApiKeys() {
+                    const saved = {};
+                    PLATFORMS.forEach(p => {
+                        const val = (document.getElementById(`key-${p}`) || {}).value || '';
+                        if (val.trim()) saved[p] = val.trim();
+                    });
+                    localStorage.setItem('kiwami_api_keys', JSON.stringify(saved));
+                    PLATFORMS.forEach(p => markKeyDot(p, saved[p] || ''));
+                    showToast('API keys saved to browser storage!');
                 }
-                
+
+                function loadApiKeys() {
+                    let saved = {};
+                    try { saved = JSON.parse(localStorage.getItem('kiwami_api_keys') || '{}'); } catch { }
+                    PLATFORMS.forEach(p => {
+                        const inp = document.getElementById(`key-${p}`);
+                        if (inp && saved[p]) inp.value = saved[p];
+                        markKeyDot(p, saved[p] || '');
+                    });
+                    return saved;
+                }
+
+                function getApiKeys() {
+                    let saved = {};
+                    try { saved = JSON.parse(localStorage.getItem('kiwami_api_keys') || '{}'); } catch { }
+                    return saved;
+                }
+
+                function clearApiKeys() {
+                    localStorage.removeItem('kiwami_api_keys');
+                    PLATFORMS.forEach(p => {
+                        const inp = document.getElementById(`key-${p}`);
+                        if (inp) inp.value = '';
+                        markKeyDot(p, '');
+                    });
+                    showToast('All API keys cleared.');
+                }
+
+                function markKeyDot(platform, value) {
+                    const dot = document.getElementById(`dot-${platform}`);
+                    if (dot) dot.className = 'key-status-dot' + (value && value.trim() ? ' set' : '');
+                }
+
+                function toggleApiKeysPanel() {
+                    const body = document.getElementById('api-keys-body');
+                    const icon = document.getElementById('api-toggle-icon');
+                    const open = body.style.display !== 'none' && body.style.display !== '';
+                    body.style.display = open ? 'none' : 'block';
+                    if (icon) icon.className = 'fas fa-chevron-down api-toggle-icon' + (open ? '' : ' open');
+                }
+
+                // Load saved keys on init
+                loadApiKeys();
+
+                // ── Platform status renderer ──────────────────────────────────
+                const PLATFORM_META = {
+                    youtube: { label: 'YouTube', icon: 'fab fa-youtube', color: '#ff0000' },
+                    twitter: { label: 'Twitter/X', icon: 'fab fa-twitter', color: '#1da1f2' },
+                    facebook: { label: 'Facebook', icon: 'fab fa-facebook', color: '#3b5998' },
+                    instagram: { label: 'Instagram', icon: 'fab fa-instagram', color: '#e4405f' },
+                    linkedin: { label: 'LinkedIn', icon: 'fab fa-linkedin', color: '#0077b5' },
+                    tiktok: { label: 'TikTok', icon: 'fab fa-tiktok', color: '#000000' }
+                };
+
+                function renderPlatformStatus(platforms) {
+                    const grid = document.getElementById('platform-status-grid');
+                    const panel = document.getElementById('connection-status-panel');
+                    if (!grid) return;
+                    grid.innerHTML = '';
+                    panel.style.display = 'block';
+
+                    for (const [pid, data] of Object.entries(platforms)) {
+                        const meta = PLATFORM_META[pid] || { label: pid, icon: 'fas fa-globe', color: '#888' };
+                        const card = document.createElement('div');
+                        card.className = 'ps-card';
+
+                        let tagText = '', tagClass = '', detailText = '', metricsHtml = '';
+
+                        if (data.status === 'ok') {
+                            card.classList.add('status-ok');
+                            tagText = '✓ CONNECTED'; tagClass = 'ok';
+                            detailText = data.name ? `@${data.name}` : '';
+                            metricsHtml = `<div class="ps-metric">👥 ${formatNumber((data.followers || 0).toString())} followers &nbsp;|&nbsp; 🎬 ${formatNumber((data.posts || 0).toString())} posts</div>`;
+                        } else if (data.status === 'no_url') {
+                            card.classList.add('status-no-url');
+                            tagText = 'SKIPPED'; tagClass = 'skipped';
+                            detailText = 'No URL entered';
+                        } else if (data.status === 'no_credentials') {
+                            card.classList.add('status-unconfigured');
+                            tagText = 'NO API KEY'; tagClass = 'warn';
+                            detailText = data.setup || data.error || 'Configure API key in Step 1 above';
+                        } else {
+                            card.classList.add('status-error');
+                            tagText = 'ERROR'; tagClass = 'error';
+                            detailText = data.error || 'Unknown error';
+                            if (data.setup) detailText += ` — ${data.setup}`;
+                        }
+
+                        card.innerHTML = `
+                            <i class="${meta.icon} ps-icon" style="color:${meta.color}"></i>
+                            <div class="ps-info">
+                                <div class="ps-name">${meta.label} <span class="ps-tag ${tagClass}">${tagText}</span></div>
+                                <div class="ps-detail">${detailText}</div>
+                                ${metricsHtml}
+                            </div>`;
+                        grid.appendChild(card);
+                    }
+                }
+
+                // ── Apply fetched data to the dashboard ───────────────────────
+                function applyAnalyticsData(data) {
+                    const platformOrder = PLATFORMS;
+
+                    // Aggregate metric cards
+                    document.getElementById('total-posts').textContent = data.totalPosts !== undefined ? data.totalPosts : '—';
+                    document.getElementById('engagement-rate').textContent = data.engagementRate !== undefined ? data.engagementRate + '%' : '—';
+                    document.getElementById('total-followers').textContent = data.totalFollowers !== undefined ? formatNumber(data.totalFollowers.toString()) : '—';
+                    document.getElementById('total-views').textContent = data.totalViews !== undefined ? formatNumber(data.totalViews.toString()) : '—';
+
+                    document.getElementById('total-posts-change').textContent = data.fetchedAt ? `Fetched at ${new Date(data.fetchedAt).toLocaleTimeString()}` : '';
+                    document.getElementById('engagement-rate-change').textContent = 'Avg across connected platforms';
+                    document.getElementById('total-followers-change').textContent = 'Combined all platforms';
+                    document.getElementById('total-views-change').textContent = 'Combined all platforms';
+
+                    // Per-platform metric cards
+                    const platformCards = document.querySelectorAll('.platform-metric');
+                    platformOrder.forEach((pid, idx) => {
+                        const pData = data.platforms?.[pid];
+                        if (!pData || pData.status !== 'ok' || !platformCards[idx]) return;
+                        const values = platformCards[idx].querySelectorAll('.value');
+                        if (values[0]) values[0].textContent = formatNumber((pData.followers || 0).toString());
+                        if (values[1]) values[1].textContent = (pData.engagement ?? '—') + (pData.engagement !== undefined ? '%' : '');
+                        if (values[2]) values[2].textContent = formatNumber((pData.views || 0).toString());
+                        if (values[3]) values[3].textContent = formatNumber((pData.likes || 0).toString());
+                    });
+
+                    // Platform distribution chart (followers per platform)
+                    platformChart.data.datasets[0].data = platformOrder.map(pid => {
+                        const p = data.platforms?.[pid];
+                        return (p && p.status === 'ok') ? (p.followers || 0) : 0;
+                    });
+                    platformChart.update();
+                }
+
+                // ── Main fetch function ────────────────────────────────────────
+                async function fetchSocialMediaAnalytics() {
+                    const profileUrls = {
+                        facebook: document.getElementById('facebook-profile').value.trim(),
+                        instagram: document.getElementById('instagram-profile').value.trim(),
+                        twitter: document.getElementById('twitter-profile').value.trim(),
+                        linkedin: document.getElementById('linkedin-profile').value.trim(),
+                        youtube: document.getElementById('youtube-profile').value.trim(),
+                        tiktok: document.getElementById('tiktok-profile').value.trim()
+                    };
+
+                    const hasAnyProfile = Object.values(profileUrls).some(v => v !== '');
+                    if (!hasAnyProfile) {
+                        showToast('Please enter at least one social media profile URL in Step 2', true);
+                        return;
+                    }
+
+                    // Retrieve saved API keys from localStorage
+                    const apiKeys = getApiKeys();
+
+                    // Animate button
+                    const fetchBtn = document.getElementById('fetch-analytics');
+                    const fetchIcon = document.getElementById('fetch-icon');
+                    fetchBtn.disabled = true;
+                    if (fetchIcon) fetchIcon.className = 'fas fa-spinner fa-spin';
+                    showToast('Contacting social media APIs…');
+
+                    try {
+                        const response = await fetch('/api/analytics', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ profiles: profileUrls, apiKeys })
+                        });
+
+                        const data = await response.json();
+
+                        if (!response.ok) {
+                            throw new Error(data.error || `Server error ${response.status}`);
+                        }
+
+                        // Render platform status cards
+                        renderPlatformStatus(data.platforms || {});
+
+                        // Check if any platform returned real data
+                        const successCount = Object.values(data.platforms || {}).filter(p => p.status === 'ok').length;
+
+                        if (successCount > 0) {
+                            applyAnalyticsData(data);
+                            showToast(`✅ Real data fetched from ${successCount} platform(s)!`);
+                        } else {
+                            // All platforms need credentials
+                            showToast('No platforms returned data. Check your API keys in Step 1.', true);
+                            // Open the keys panel so user can see
+                            const body = document.getElementById('api-keys-body');
+                            if (body && body.style.display === 'none') toggleApiKeysPanel();
+                        }
+
+                    } catch (err) {
+                        console.error('Analytics fetch error:', err);
+                        showToast(err.message.includes('server') ? err.message : 'Could not reach the server. Make sure server.js is running on port 3000.', true);
+                    } finally {
+                        fetchBtn.disabled = false;
+                        if (fetchIcon) fetchIcon.className = 'fas fa-sync';
+                    }
+                }
+
                 // Function to update manual statistics
                 function updateManualStats() {
-                    // Get values from input fields
-                    const fbFollowers = document.getElementById('fb-followers').value || '12.5K';
-                    const fbViews = document.getElementById('fb-views').value || '64K';
-                    const fbLikes = document.getElementById('fb-likes').value || '1.2K';
-                    const fbReposts = document.getElementById('fb-reposts').value || '0.3K';
-                    
-                    const igFollowers = document.getElementById('ig-followers').value || '8.3K';
-                    const igViews = document.getElementById('ig-views').value || '45K';
-                    const igLikes = document.getElementById('ig-likes').value || '2.4K';
-                    const igReposts = document.getElementById('ig-reposts').value || '0.5K';
-                    
-                    const twFollowers = document.getElementById('tw-followers').value || '2.1K';
-                    const twViews = document.getElementById('tw-views').value || '18K';
-                    const twLikes = document.getElementById('tw-likes').value || '0.8K';
-                    const twReposts = document.getElementById('tw-reposts').value || '0.2K';
-                    
-                    const liFollowers = document.getElementById('li-followers').value || '3.4K';
-                    const liViews = document.getElementById('li-views').value || '22K';
-                    const liLikes = document.getElementById('li-likes').value || '1.5K';
-                    const liReposts = document.getElementById('li-reposts').value || '0.4K';
-                    
-                    const ytFollowers = document.getElementById('yt-followers').value || '5.2K';
-                    const ytViews = document.getElementById('yt-views').value || '128K';
-                    const ytLikes = document.getElementById('yt-likes').value || '4.7K';
-                    const ytReposts = document.getElementById('yt-reposts').value || '0.6K';
-                    
-                    const ttFollowers = document.getElementById('tt-followers').value || '1.6K';
-                    const ttViews = document.getElementById('tt-views').value || '29K';
-                    const ttLikes = document.getElementById('tt-likes').value || '3.1K';
-                    const ttReposts = document.getElementById('tt-reposts').value || '0.7K';
-                    
-                    // Update platform metrics with manual values
-                    const platforms = document.querySelectorAll('.platform-metric');
-                    
-                    // Facebook
-                    platforms[0].querySelectorAll('.value')[0].textContent = formatNumber(fbFollowers);
-                    platforms[0].querySelectorAll('.value')[1].textContent = '4.2%';
-                    platforms[0].querySelectorAll('.value')[2].textContent = formatNumber(fbViews);
-                    platforms[0].querySelectorAll('.value')[3].textContent = formatNumber(fbLikes);
-                    
-                    // Instagram
-                    platforms[1].querySelectorAll('.value')[0].textContent = formatNumber(igFollowers);
-                    platforms[1].querySelectorAll('.value')[1].textContent = '7.8%';
-                    platforms[1].querySelectorAll('.value')[2].textContent = formatNumber(igViews);
-                    platforms[1].querySelectorAll('.value')[3].textContent = formatNumber(igLikes);
-                    
-                    // Twitter
-                    platforms[2].querySelectorAll('.value')[0].textContent = formatNumber(twFollowers);
-                    platforms[2].querySelectorAll('.value')[1].textContent = '3.5%';
-                    platforms[2].querySelectorAll('.value')[2].textContent = formatNumber(twViews);
-                    platforms[2].querySelectorAll('.value')[3].textContent = formatNumber(twLikes);
-                    
-                    // LinkedIn
-                    platforms[3].querySelectorAll('.value')[0].textContent = formatNumber(liFollowers);
-                    platforms[3].querySelectorAll('.value')[1].textContent = '5.1%';
-                    platforms[3].querySelectorAll('.value')[2].textContent = formatNumber(liViews);
-                    platforms[3].querySelectorAll('.value')[3].textContent = formatNumber(liLikes);
-                    
-                    // YouTube
-                    platforms[4].querySelectorAll('.value')[0].textContent = formatNumber(ytFollowers);
-                    platforms[4].querySelectorAll('.value')[1].textContent = '8.3%';
-                    platforms[4].querySelectorAll('.value')[2].textContent = formatNumber(ytViews);
-                    platforms[4].querySelectorAll('.value')[3].textContent = formatNumber(ytLikes);
-                    
-                    // TikTok
-                    platforms[5].querySelectorAll('.value')[0].textContent = formatNumber(ttFollowers);
-                    platforms[5].querySelectorAll('.value')[1].textContent = '12.4%';
-                    platforms[5].querySelectorAll('.value')[2].textContent = formatNumber(ttViews);
-                    platforms[5].querySelectorAll('.value')[3].textContent = formatNumber(ttLikes);
-                    
+                    const platformDefs = [
+                        { prefix: 'fb', label: 'Facebook', engRate: null },
+                        { prefix: 'ig', label: 'Instagram', engRate: null },
+                        { prefix: 'tw', label: 'Twitter', engRate: null },
+                        { prefix: 'li', label: 'LinkedIn', engRate: null },
+                        { prefix: 'yt', label: 'YouTube', engRate: null },
+                        { prefix: 'tt', label: 'TikTok', engRate: null }
+                    ];
+
+                    let hasAnyValue = false;
+                    let totalFollowers = 0;
+                    let totalViews = 0;
+                    let totalLikes = 0;
+
+                    const platformCards = document.querySelectorAll('.platform-metric');
+                    const followerDistrib = [];
+
+                    platformDefs.forEach((pDef, idx) => {
+                        const followersRaw = document.getElementById(`${pDef.prefix}-followers`).value.trim();
+                        const viewsRaw = document.getElementById(`${pDef.prefix}-views`).value.trim();
+                        const likesRaw = document.getElementById(`${pDef.prefix}-likes`).value.trim();
+
+                        const followersNum = followersRaw !== '' ? parseInt(followersRaw) : null;
+                        const viewsNum = viewsRaw !== '' ? parseInt(viewsRaw) : null;
+                        const likesNum = likesRaw !== '' ? parseInt(likesRaw) : null;
+
+                        // Compute engagement rate: (likes / followers) * 100
+                        let engRate = '—';
+                        if (followersNum && likesNum && followersNum > 0) {
+                            engRate = ((likesNum / followersNum) * 100).toFixed(1) + '%';
+                        }
+
+                        if (followersNum !== null) { totalFollowers += followersNum; hasAnyValue = true; }
+                        if (viewsNum !== null) { totalViews += viewsNum; hasAnyValue = true; }
+                        if (likesNum !== null) { totalLikes += likesNum; hasAnyValue = true; }
+
+                        followerDistrib.push(followersNum || 0);
+
+                        if (platformCards[idx]) {
+                            const vals = platformCards[idx].querySelectorAll('.value');
+                            if (vals[0]) vals[0].textContent = followersNum !== null ? formatNumber(followersRaw) : '—';
+                            if (vals[1]) vals[1].textContent = engRate;
+                            if (vals[2]) vals[2].textContent = viewsNum !== null ? formatNumber(viewsRaw) : '—';
+                            if (vals[3]) vals[3].textContent = likesNum !== null ? formatNumber(likesRaw) : '—';
+                        }
+                    });
+
+                    if (!hasAnyValue) {
+                        showToast('Please enter at least one value to update statistics', true);
+                        return;
+                    }
+
+                    // Update aggregate metric cards
+                    const overallEng = totalFollowers > 0 ? ((totalLikes / totalFollowers) * 100).toFixed(1) + '%' : '—';
+                    document.getElementById('total-followers').textContent = formatNumber(totalFollowers.toString());
+                    document.getElementById('total-views').textContent = formatNumber(totalViews.toString());
+                    document.getElementById('engagement-rate').textContent = overallEng;
+                    document.getElementById('total-followers-change').textContent = 'Manually updated';
+                    document.getElementById('total-views-change').textContent = 'Manually updated';
+                    document.getElementById('engagement-rate-change').textContent = 'Manually updated';
+
+                    // Update platform distribution chart
+                    platformChart.data.datasets[0].data = followerDistrib;
+                    platformChart.update();
+
                     showToast('Statistics updated successfully!');
                 }
-                
-                // Helper function to format numbers
+
+                // Helper function to safely format numbers
                 function formatNumber(value) {
-                    if (value.includes('K')) return value;
-                    const num = parseInt(value);
+                    if (!value || value.toString().trim() === '') return '—';
+                    const str = value.toString().trim();
+                    if (str.toUpperCase().includes('K') || str.toUpperCase().includes('M')) return str;
+                    const num = parseInt(str, 10);
+                    if (isNaN(num)) return str;
+                    if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
                     if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
                     return num.toString();
                 }
-                
+
                 // Set up all event listeners
                 function setupEventListeners() {
                     // Month navigation
-                    document.getElementById('prev-month').addEventListener('click', function() {
+                    document.getElementById('prev-month').addEventListener('click', function () {
                         currentDate.setMonth(currentDate.getMonth() - 1);
                         renderCalendar(currentDate);
                     });
-                    
-                    document.getElementById('next-month').addEventListener('click', function() {
+
+                    document.getElementById('next-month').addEventListener('click', function () {
                         currentDate.setMonth(currentDate.getMonth() + 1);
                         renderCalendar(currentDate);
                     });
-                    
+
                     // Notification bell
-                    document.getElementById('notification-bell').addEventListener('click', function() {
+                    document.getElementById('notification-bell').addEventListener('click', function () {
                         const notificationModal = document.getElementById('notification-modal');
                         if (notificationModal.style.display === 'block') {
                             notificationModal.style.display = 'none';
@@ -2164,26 +2788,26 @@ ${content.media ? 'Media attached: Yes' : 'Media attached: No'}
                             notificationModal.style.display = 'block';
                         }
                     });
-                    
+
                     // Close notifications
-                    document.getElementById('close-notifications').addEventListener('click', function() {
+                    document.getElementById('close-notifications').addEventListener('click', function () {
                         document.getElementById('notification-modal').style.display = 'none';
                     });
-                    
+
                     // Tab navigation
                     document.querySelectorAll('.nav-tab').forEach(tab => {
-                        tab.addEventListener('click', function() {
+                        tab.addEventListener('click', function () {
                             // Update active tab
                             document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
                             this.classList.add('active');
-                            
+
                             // Show appropriate content
                             const tabName = this.dataset.tab;
                             document.querySelectorAll('.tab-content').forEach(content => {
                                 content.classList.remove('active');
                             });
                             document.getElementById(`${tabName}-tab`).classList.add('active');
-                            
+
                             // Update main view
                             if (tabName === 'calendar') {
                                 document.getElementById('calendar-view').style.display = 'block';
@@ -2194,84 +2818,84 @@ ${content.media ? 'Media attached: Yes' : 'Media attached: No'}
                             }
                         });
                     });
-                    
+
                     // Sidebar toggle
-                    document.getElementById('sidebar-toggle').addEventListener('click', function() {
+                    document.getElementById('sidebar-toggle').addEventListener('click', function () {
                         document.getElementById('sidebar').classList.toggle('open');
                     });
-                    
+
                     // Fetch analytics button
                     document.getElementById('fetch-analytics').addEventListener('click', fetchSocialMediaAnalytics);
-                    
+
                     // Update stats button
                     document.getElementById('update-stats').addEventListener('click', updateManualStats);
-                    
+
                     // Modal controls
                     const modals = document.querySelectorAll('.modal');
                     const closeButtons = document.querySelectorAll('.close');
-                    
+
                     // Open add content modal
-                    document.getElementById('add-content-btn').addEventListener('click', function() {
+                    document.getElementById('add-content-btn').addEventListener('click', function () {
                         resetContentForm();
                         // Set today's date as default
                         const today = new Date();
                         const formattedDate = today.toISOString().split('T')[0];
                         document.getElementById('content-date').value = formattedDate;
-                        
+
                         document.getElementById('content-modal').style.display = 'flex';
                     });
-                    
+
                     // Open add topic modal
-                    document.getElementById('add-topic-btn').addEventListener('click', function() {
+                    document.getElementById('add-topic-btn').addEventListener('click', function () {
                         document.getElementById('topic-modal').style.display = 'flex';
                     });
-                    
+
                     // Close modals
                     closeButtons.forEach(button => {
-                        button.addEventListener('click', function() {
+                        button.addEventListener('click', function () {
                             modals.forEach(modal => {
                                 modal.style.display = 'none';
                             });
                         });
                     });
-                    
+
                     // Click outside modal to close
                     modals.forEach(modal => {
-                        modal.addEventListener('click', function(e) {
+                        modal.addEventListener('click', function (e) {
                             if (e.target === modal) {
                                 modal.style.display = 'none';
                             }
                         });
                     });
-                    
+
                     // Click outside notification modal to close
-                    document.addEventListener('click', function(e) {
+                    document.addEventListener('click', function (e) {
                         const notificationModal = document.getElementById('notification-modal');
                         const notificationBell = document.getElementById('notification-bell');
-                        
-                        if (notificationModal.style.display === 'block' && 
-                            !notificationModal.contains(e.target) && 
+
+                        if (notificationModal.style.display === 'block' &&
+                            !notificationModal.contains(e.target) &&
                             !notificationBell.contains(e.target)) {
                             notificationModal.style.display = 'none';
                         }
                     });
-                    
+
                     // Status buttons
                     const statusButtons = document.querySelectorAll('.status-btn');
                     statusButtons.forEach(button => {
-                        button.addEventListener('click', function() {
+                        button.addEventListener('click', function () {
                             statusButtons.forEach(btn => btn.classList.remove('active'));
                             this.classList.add('active');
                             document.getElementById('content-status').value = this.dataset.status;
                         });
                     });
-                    
+
                     // Media upload
-                    document.getElementById('media-upload-area').addEventListener('click', function() {
+                    document.getElementById('media-upload-area').addEventListener('click', function () {
                         document.getElementById('media-file').click();
                     });
-                    
-                    document.getElementById('media-file').addEventListener('change', async function(e) {
+
+                    document.getElementById('media-file').addEventListener('change', async function (e) {
                         const file = e.target.files[0];
                         if (file) {
                             // Check file size (max 100MB)
@@ -2279,37 +2903,37 @@ ${content.media ? 'Media attached: Yes' : 'Media attached: No'}
                                 showToast('File size must be less than 100MB', true);
                                 return;
                             }
-                            
+
                             currentMediaFile = file;
-                            
+
                             try {
                                 // Show progress bar
                                 const progressBar = document.getElementById('upload-progress');
                                 const progressBarInner = document.getElementById('upload-progress-bar');
                                 progressBar.style.display = 'block';
-                                
+
                                 // Simulate upload progress
                                 let progress = 0;
                                 const interval = setInterval(() => {
                                     progress += 5;
                                     progressBarInner.style.width = `${progress}%`;
-                                    
+
                                     if (progress >= 100) {
                                         clearInterval(interval);
-                                        
+
                                         // Create a blob URL for the file
                                         const blobUrl = URL.createObjectURL(file);
-                                        
+
                                         // Hide progress bar
                                         setTimeout(() => {
                                             progressBar.style.display = 'none';
-                                            
+
                                             const preview = document.getElementById('media-preview');
                                             preview.src = blobUrl;
                                             preview.style.display = 'block';
                                             document.getElementById('remove-media').style.display = 'block';
                                             currentMedia = blobUrl;
-                                            
+
                                             showToast('Media uploaded successfully!');
                                         }, 500);
                                     }
@@ -2320,20 +2944,20 @@ ${content.media ? 'Media attached: Yes' : 'Media attached: No'}
                             }
                         }
                     });
-                    
+
                     // Remove media
-                    document.getElementById('remove-media').addEventListener('click', function() {
+                    document.getElementById('remove-media').addEventListener('click', function () {
                         document.getElementById('media-preview').style.display = 'none';
                         this.style.display = 'none';
                         document.getElementById('media-file').value = '';
                         currentMedia = null;
                         currentMediaFile = null;
                     });
-                    
+
                     // Content form submission
-                    document.getElementById('content-form').addEventListener('submit', async function(e) {
+                    document.getElementById('content-form').addEventListener('submit', async function (e) {
                         e.preventDefault();
-                        
+
                         // Get form values
                         const id = document.getElementById('content-id').value || Date.now();
                         const title = document.getElementById('content-title').value;
@@ -2342,18 +2966,18 @@ ${content.media ? 'Media attached: Yes' : 'Media attached: No'}
                         const type = document.getElementById('content-type').value;
                         const date = document.getElementById('content-date').value;
                         const status = document.getElementById('content-status').value;
-                        
+
                         // Get selected platforms
                         const platforms = [];
                         document.querySelectorAll('.platform-checkbox input:checked').forEach(checkbox => {
                             platforms.push(checkbox.value);
                         });
-                        
+
                         if (platforms.length === 0) {
                             showToast('Please select at least one platform', true);
                             return;
                         }
-                        
+
                         // Create content object
                         const contentData = {
                             id: parseInt(id),
@@ -2365,12 +2989,12 @@ ${content.media ? 'Media attached: Yes' : 'Media attached: No'}
                             platforms,
                             status
                         };
-                        
+
                         // Add media if available
                         if (currentMedia) {
                             contentData.media = currentMedia;
                         }
-                        
+
                         // Check if we're editing or adding new
                         const existingIndex = contentItems.findIndex(item => item.id === contentData.id);
                         if (existingIndex !== -1) {
@@ -2382,64 +3006,64 @@ ${content.media ? 'Media attached: Yes' : 'Media attached: No'}
                             contentItems.push(contentData);
                             showToast('Content added successfully!');
                         }
-                        
+
                         // Save to localStorage
                         localStorage.setItem('contentItems', JSON.stringify(contentItems));
-                        
+
                         // Update calendar
                         renderCalendar(currentDate);
-                        
+
                         // Check for notifications
                         checkDailyNotifications();
-                        
+
                         // Close modal and reset form
                         document.getElementById('content-modal').style.display = 'none';
                         resetContentForm();
                     });
-                    
+
                     // Copy text content from form
-                    document.getElementById('copy-content').addEventListener('click', function() {
+                    document.getElementById('copy-content').addEventListener('click', function () {
                         // Get form values
                         const title = document.getElementById('content-title').value;
                         const description = document.getElementById('content-description').value;
                         const topic = document.getElementById('content-topic').value;
-                        
+
                         if (!title) {
                             showToast('Please add a title first', true);
                             return;
                         }
-                        
+
                         // Create content object
                         const contentData = {
                             title,
                             description,
                             topic: topics.find(t => t.id === topic)?.name || topic
                         };
-                        
+
                         copyTextContent(contentData, 'general');
                     });
-                    
+
                     // Download media from form
-                    document.getElementById('download-media').addEventListener('click', function() {
+                    document.getElementById('download-media').addEventListener('click', function () {
                         // Get form values
                         const title = document.getElementById('content-title').value;
-                        
+
                         if (!currentMedia) {
                             showToast('No media to download', true);
                             return;
                         }
-                        
+
                         // Create content object
                         const contentData = {
                             title,
                             media: currentMedia
                         };
-                        
+
                         downloadMedia(contentData);
                     });
-                    
+
                     // Download content from form
-                    document.getElementById('download-content').addEventListener('click', function() {
+                    document.getElementById('download-content').addEventListener('click', function () {
                         // Get form values
                         const title = document.getElementById('content-title').value;
                         const description = document.getElementById('content-description').value;
@@ -2447,18 +3071,18 @@ ${content.media ? 'Media attached: Yes' : 'Media attached: No'}
                         const type = document.getElementById('content-type').value;
                         const date = document.getElementById('content-date').value;
                         const status = document.getElementById('content-status').value;
-                        
+
                         // Get selected platforms
                         const platforms = [];
                         document.querySelectorAll('.platform-checkbox input:checked').forEach(checkbox => {
                             platforms.push(checkbox.value);
                         });
-                        
+
                         if (!title) {
                             showToast('Please add a title first', true);
                             return;
                         }
-                        
+
                         // Create content object
                         const contentData = {
                             id: Date.now(),
@@ -2471,91 +3095,91 @@ ${content.media ? 'Media attached: Yes' : 'Media attached: No'}
                             status,
                             media: currentMedia
                         };
-                        
+
                         downloadContent(contentData);
                     });
-                    
+
                     // Topic form submission
-                    document.getElementById('topic-form').addEventListener('submit', function(e) {
+                    document.getElementById('topic-form').addEventListener('submit', function (e) {
                         e.preventDefault();
-                        
+
                         const name = document.getElementById('topic-name').value;
                         const icon = document.getElementById('topic-icon').value;
                         const id = name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-                        
+
                         // Check if topic already exists
                         if (topics.some(topic => topic.id === id)) {
                             showToast('Topic already exists!', true);
                             return;
                         }
-                        
+
                         // Add new topic
                         topics.push({
                             id,
                             name,
                             icon
                         });
-                        
+
                         // Save to localStorage
                         localStorage.setItem('topics', JSON.stringify(topics));
-                        
+
                         // Update topics list and dropdown
                         renderTopics();
                         populateTopicDropdown();
-                        
+
                         // Show success message
                         showToast('Topic added successfully!');
-                        
+
                         // Close modal and reset form
                         document.getElementById('topic-modal').style.display = 'none';
                         this.reset();
                     });
-                    
+
                     // Social media posting buttons
-                    document.getElementById('post-facebook').addEventListener('click', function() {
+                    document.getElementById('post-facebook').addEventListener('click', function () {
                         const content = contentItems.find(item => item.id === currentContentId);
                         if (content) {
                             openSocialMediaPlatform('facebook', content);
                         }
                     });
-                    
-                    document.getElementById('post-instagram').addEventListener('click', function() {
+
+                    document.getElementById('post-instagram').addEventListener('click', function () {
                         const content = contentItems.find(item => item.id === currentContentId);
                         if (content) {
                             openSocialMediaPlatform('instagram', content);
                         }
                     });
-                    
-                    document.getElementById('post-twitter').addEventListener('click', function() {
+
+                    document.getElementById('post-twitter').addEventListener('click', function () {
                         const content = contentItems.find(item => item.id === currentContentId);
                         if (content) {
                             openSocialMediaPlatform('twitter', content);
                         }
                     });
-                    
-                    document.getElementById('post-linkedin').addEventListener('click', function() {
+
+                    document.getElementById('post-linkedin').addEventListener('click', function () {
                         const content = contentItems.find(item => item.id === currentContentId);
                         if (content) {
                             openSocialMediaPlatform('linkedin', content);
                         }
                     });
-                    
-                    document.getElementById('post-youtube').addEventListener('click', function() {
+
+                    document.getElementById('post-youtube').addEventListener('click', function () {
                         const content = contentItems.find(item => item.id === currentContentId);
                         if (content) {
                             openSocialMediaPlatform('youtube', content);
                         }
                     });
-                    
-                    document.getElementById('post-tiktok').addEventListener('click', function() {
+
+                    document.getElementById('post-tiktok').addEventListener('click', function () {
                         const content = contentItems.find(item => item.id === currentContentId);
                         if (content) {
                             openSocialMediaPlatform('tiktok', content);
                         }
                     });
-                    
+
                     // Copy text content from detail view
-                    document.getElementById('copy-content-detail').addEventListener('click', function() {
+                    document.getElementById('copy-content-detail').addEventListener('click', function () {
                         if (currentContentId) {
                             const content = contentItems.find(item => item.id === currentContentId);
                             if (content) {
@@ -2563,9 +3187,9 @@ ${content.media ? 'Media attached: Yes' : 'Media attached: No'}
                             }
                         }
                     });
-                    
+
                     // Download media from detail view
-                    document.getElementById('download-media-detail').addEventListener('click', function() {
+                    document.getElementById('download-media-detail').addEventListener('click', function () {
                         if (currentContentId) {
                             const content = contentItems.find(item => item.id === currentContentId);
                             if (content) {
@@ -2573,59 +3197,59 @@ ${content.media ? 'Media attached: Yes' : 'Media attached: No'}
                             }
                         }
                     });
-                    
+
                     // Confirm post button
-                    document.getElementById('confirm-post').addEventListener('click', function() {
+                    document.getElementById('confirm-post').addEventListener('click', function () {
                         const postLink = document.getElementById('post-link').value;
-                        
+
                         if (!postLink) {
                             showToast('Please enter a valid URL', true);
                             return;
                         }
-                        
+
                         if (currentContentId) {
                             const contentIndex = contentItems.findIndex(item => item.id === currentContentId);
                             if (contentIndex !== -1) {
                                 contentItems[contentIndex].status = 'posted';
-                                
+
                                 // Add post link to content
                                 if (!contentItems[contentIndex].postLinks) {
                                     contentItems[contentIndex].postLinks = {};
                                 }
                                 contentItems[contentIndex].postLinks[selectedPlatform] = postLink;
-                                
+
                                 // Save to localStorage
                                 localStorage.setItem('contentItems', JSON.stringify(contentItems));
-                                
+
                                 // Update calendar
                                 renderCalendar(currentDate);
-                                
+
                                 // Show success message
                                 showToast('Content status updated to Posted!');
-                                
+
                                 // Close modal
                                 document.getElementById('detail-modal').style.display = 'none';
                             }
                         }
                     });
-                    
+
                     // Edit content button
-                    document.getElementById('edit-content-btn').addEventListener('click', function() {
+                    document.getElementById('edit-content-btn').addEventListener('click', function () {
                         if (currentContentId) {
                             const content = contentItems.find(item => item.id === currentContentId);
                             if (content) {
                                 // Close detail modal
                                 document.getElementById('detail-modal').style.display = 'none';
-                                
+
                                 // Populate and open content form
                                 populateContentForm(content);
                                 document.getElementById('content-modal').style.display = 'flex';
                             }
                         }
                     });
-                    
+
                     // Download content from detail view
-                    document.getElementById('download-content-detail').addEventListener('click', function() {
+                    document.getElementById('download-content-detail').addEventListener('click', function () {
                         if (currentContentId) {
                             const content = contentItems.find(item => item.id === currentContentId);
                             if (content) {
@@ -2633,30 +3257,43 @@ ${content.media ? 'Media attached: Yes' : 'Media attached: No'}
                             }
                         }
                     });
-                    
+
                     // Delete content button
-                    document.getElementById('delete-content-btn').addEventListener('click', function() {
+                    document.getElementById('delete-content-btn').addEventListener('click', function () {
                         if (currentContentId) {
                             if (confirm('Are you sure you want to delete this content?')) {
                                 contentItems = contentItems.filter(item => item.id !== currentContentId);
-                                
+
                                 // Save to localStorage
                                 localStorage.setItem('contentItems', JSON.stringify(contentItems));
-                                
+
                                 // Update calendar
                                 renderCalendar(currentDate);
-                                
+
                                 // Show success message
                                 showToast('Content deleted successfully!');
-                                
+
                                 // Close modal
                                 document.getElementById('detail-modal').style.display = 'none';
                             }
                         }
                     });
+
+                    // Logout button functionality
+                    const logoutBtn = document.getElementById('logout-btn');
+                    if (logoutBtn) {
+                        logoutBtn.addEventListener('click', function () {
+                            if (confirm('Are you sure you want to logout?')) {
+                                sessionStorage.removeItem('isLoggedIn');
+                                // Force page reload to clear memory state as per guidelines
+                                window.location.reload();
+                            }
+                        });
+                    }
                 }
             }
         });
     </script>
 </body>
+
 </html>
