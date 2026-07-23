@@ -1510,12 +1510,12 @@
             <h2>Kiwami Marketing System</h2>
             <div class="form-group">
                 <label for="login-email">Email</label>
-                <input type="email" id="login-email" class="form-control" placeholder="Enter your email">
+                <input type="email" id="login-email" class="form-control" placeholder="Enter your email" autocomplete="username" maxlength="254" required>
             </div>
             <div class="form-group">
                 <label for="login-password">Password</label>
                 <div class="password-wrapper">
-                    <input type="password" id="login-password" class="form-control" placeholder="Enter your password">
+                    <input type="password" id="login-password" class="form-control" placeholder="Enter your password" autocomplete="current-password" maxlength="128" required>
                     <button type="button" class="password-toggle" id="toggle-password" title="Show/Hide password"
                         aria-label="Toggle password visibility">
                         <i class="fas fa-eye" id="toggle-password-icon"></i>
@@ -2179,25 +2179,57 @@
 
     <script>
         // Initialize the application
-        document.addEventListener('DOMContentLoaded', function () {
-            // Check if user is already logged in (sessionStorage is cleared when tab is closed)
-            const isLoggedIn = sessionStorage.getItem('isLoggedIn') === 'true';
+        document.addEventListener('DOMContentLoaded', async function () {
+            // Check if the browser already has a valid server-side session cookie
+            let isLoggedIn = sessionStorage.getItem('isLoggedIn') === 'true';
+            if (!isLoggedIn) {
+                try {
+                    const response = await fetch('/api/login-status', { method: 'GET', cache: 'no-store' });
+                    isLoggedIn = response.ok;
+                } catch {
+                    isLoggedIn = false;
+                }
+            }
+
             if (isLoggedIn) {
+                sessionStorage.setItem('isLoggedIn', 'true');
                 initializeApp();
             } else {
                 // Set up login functionality
-                document.getElementById('login-btn').addEventListener('click', function () {
+                document.getElementById('login-btn').addEventListener('click', async function () {
                     const email = document.getElementById('login-email').value.trim();
                     const password = document.getElementById('login-password').value;
 
-                    // Allow both the configured domain and a standard format if needed
-                    if ((email === 'kiwamitech.co.ke' || email === 'admin@kiwamitech.co.ke') && password === 'kiwami@2025') {
+                    if (!email || !password) {
+                        alert('Please enter both email and password.');
+                        return;
+                    }
+
+                    const loginBtn = document.getElementById('login-btn');
+                    loginBtn.disabled = true;
+                    loginBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Signing in...';
+
+                    try {
+                        const response = await fetch('/api/login', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ email, password })
+                        });
+
+                        const data = await response.json();
+                        if (!response.ok) {
+                            throw new Error(data.error || 'Login failed');
+                        }
+
                         sessionStorage.setItem('isLoggedIn', 'true');
                         document.documentElement.classList.remove('logged-out');
                         document.documentElement.classList.add('logged-in');
                         initializeApp();
-                    } else {
-                        alert('Invalid credentials. Please try again.');
+                    } catch (error) {
+                        alert(error.message || 'Invalid credentials. Please try again.');
+                    } finally {
+                        loginBtn.disabled = false;
+                        loginBtn.innerHTML = '<i class="fas fa-sign-in-alt"></i> Login';
                     }
                 });
 
@@ -3827,8 +3859,14 @@ ${content.media ? 'Media attached: Yes' : 'Media attached: No'}
                     // Logout button functionality
                     const logoutBtn = document.getElementById('logout-btn');
                     if (logoutBtn) {
-                        logoutBtn.addEventListener('click', function () {
+                        logoutBtn.addEventListener('click', async function () {
                             if (confirm('Are you sure you want to logout?')) {
+                                try {
+                                    await fetch('/api/logout', { method: 'POST', cache: 'no-store' });
+                                } catch {
+                                    // Ignore logout API errors and proceed with local cleanup
+                                }
+
                                 sessionStorage.removeItem('isLoggedIn');
                                 // Force page reload to clear memory state as per guidelines
                                 window.location.reload();

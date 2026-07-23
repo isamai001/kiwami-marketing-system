@@ -9,11 +9,19 @@ require('dotenv').config();
 const https  = require('https');
 const http   = require('http');
 const url    = require('url');
+const crypto = require('crypto');
 const express = require('express');
 const cors   = require('cors');
 const path   = require('path');
 
 const app = express();
+const AUTH_EMAIL = (process.env.KIWAMI_ADMIN_EMAIL || 'admin@kiwamitech.co.ke').trim().toLowerCase();
+const AUTH_PASSWORD = (process.env.KIWAMI_ADMIN_PASSWORD || 'Kiwami@2026').trim();
+const LOGIN_ATTEMPT_LIMIT = 5;
+const LOGIN_ATTEMPT_WINDOW_MS = 10 * 60 * 1000;
+const SESSION_TTL_MS = 30 * 60 * 1000;
+const loginAttempts = new Map();
+const sessions = new Map();
 
 // ── Security ──────────────────────────────────────────────────────────────────
 const fs = require('fs');
@@ -77,6 +85,58 @@ function apiGet(rawUrl, headers = {}) {
 function safe(str, max = 500) {
     if (typeof str !== 'string') return '';
     return str.replace(/[<>"'`]/g, '').trim().slice(0, max);
+}
+
+function timingSafeEquals(a, b) {
+    const aBuf = Buffer.from(String(a || ''));
+    const bBuf = Buffer.from(String(b || ''));
+    if (aBuf.length !== bBuf.length) return false;
+    return crypto.timingSafeEqual(aBuf, bBuf);
+}
+
+function getClientIp(req) {
+    return (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown').toString().split(',')[0].trim();
+}
+
+function getSessionCookie(req) {
+    const cookieHeader = req.headers.cookie || '';
+    const cookie = cookieHeader.split(';').map(part => part.trim()).find(part => part.startsWith('kiwami_session='));
+    return cookie ? cookie.split('=')[1] : '';
+}
+
+function createSessionCookie(token) {
+    const attributes = [
+        'Path=/',
+        'HttpOnly',
+        'SameSite=Lax',
+        `Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`
+    ];
+    if (process.env.NODE_ENV === 'production') attributes.push('Secure');
+    return `kiwami_session=${token}; ${attributes.join('; ')}`;
+}
+
+function clearSessionCookie(res) {
+    const attributes = [
+        'Path=/',
+        'HttpOnly',
+        'SameSite=Lax',
+        'Max-Age=0'
+    ];
+    if (process.env.NODE_ENV === 'production') attributes.push('Secure');
+    res.setHeader('Set-Cookie', `kiwami_session=; ${attributes.join('; ')}`);
+}
+
+function requireAuthentication(req, res, next) {
+    const token = getSessionCookie(req);
+    if (!token) return res.status(401).json({ error: 'Authentication required' });
+
+    const session = sessions.get(token);
+    if (!session || session.expiresAt < Date.now()) {
+        sessions.delete(token);
+        return res.status(401).json({ error: 'Session expired or invalid' });
+    }
+
+    next();
 }
 
 // ── URL parsers ───────────────────────────────────────────────────────────────
@@ -382,6 +442,68 @@ async function fetchTikTok(profileUrl, clientToken) {
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
+app.post('/api/login', (req, res) => {
+    try {
+        const email = safe(req.body?.email || '').toLowerCase();
+        const password = safe(req.body?.password || '');
+        const clientIp = getClientIp(req);
+        const now = Date.now();
+
+        const currentAttempt = loginAttempts.get(clientIp) || { count: 0, resetAt: now };
+        if (currentAttempt.resetAt < now - LOGIN_ATTEMPT_WINDOW_MS) {
+            currentAttempt.count = 0;
+            currentAttempt.resetAt = now;
+        }
+
+        if (currentAttempt.count >= LOGIN_ATTEMPT_LIMIT) {
+            return res.status(429).json({ error: 'Too many login attempts. Please try again in a few minutes.' });
+        }
+
+        const emailMatches = email === AUTH_EMAIL || email === 'kiwamitech.co.ke';
+        const passwordMatches = timingSafeEquals(password, AUTH_PASSWORD);
+        const isAuthorized = emailMatches && passwordMatches;
+
+        if (!isAuthorized) {
+            currentAttempt.count += 1;
+            loginAttempts.set(clientIp, currentAttempt);
+            return res.status(401).json({ error: 'Invalid credentials. Please try again.' });
+        }
+
+        loginAttempts.delete(clientIp);
+        const token = crypto.randomBytes(24).toString('hex');
+        sessions.set(token, { expiresAt: now + SESSION_TTL_MS });
+
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('Set-Cookie', createSessionCookie(token));
+        return res.json({ success: true, message: 'Login successful' });
+    } catch (err) {
+        console.error('Login handler error:', err);
+        return res.status(500).json({ error: err.message || 'Internal server error' });
+    }
+});
+
+app.get('/api/login-status', (req, res) => {
+    const token = getSessionCookie(req);
+    const session = token ? sessions.get(token) : null;
+
+    if (!token || !session || session.expiresAt < Date.now()) {
+        if (token) sessions.delete(token);
+        return res.status(401).json({ authenticated: false });
+    }
+
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({ authenticated: true });
+});
+
+app.post('/api/logout', (req, res) => {
+    const token = getSessionCookie(req);
+    if (token) sessions.delete(token);
+
+    clearSessionCookie(res);
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({ success: true, message: 'Logged out' });
+});
+
 /**
  * POST /api/analytics
  * Body: { profiles: { facebook, instagram, twitter, linkedin, youtube, tiktok },
@@ -389,7 +511,7 @@ app.get('/api/health', (req, res) => res.json({ status: 'ok', timestamp: new Dat
  *
  * API keys in body take priority; env vars are used as fallback.
  */
-app.post('/api/analytics', async (req, res) => {
+app.post('/api/analytics', requireAuthentication, async (req, res) => {
     const { profiles = {}, apiKeys = {} } = req.body || {};
 
     if (typeof profiles !== 'object') return res.status(400).json({ error: 'profiles must be an object' });
@@ -475,7 +597,7 @@ app.post('/api/analytics', async (req, res) => {
 });
 
 /** GET /api/notifications – Today's content notifications */
-app.get('/api/notifications', (req, res) => {
+app.get('/api/notifications', requireAuthentication, (req, res) => {
     res.json([
         { id: 1, message: 'New comment on your Facebook post',              time: new Date(Date.now() - 15 * 60000).toISOString(), platform: 'facebook'  },
         { id: 2, message: 'Instagram post scheduled for today published',    time: new Date(Date.now() - 30 * 60000).toISOString(), platform: 'instagram' },
@@ -489,7 +611,7 @@ app.get('/api/notifications', (req, res) => {
 /** POST /api/post/:platform – Queue content for posting */
 const VALID_PLATFORMS = new Set(['facebook', 'instagram', 'twitter', 'linkedin', 'youtube', 'tiktok']);
 
-app.post('/api/post/:platform', (req, res) => {
+app.post('/api/post/:platform', requireAuthentication, (req, res) => {
     const platform = req.params.platform.toLowerCase();
     if (!VALID_PLATFORMS.has(platform)) return res.status(400).json({ error: `Unknown platform: ${platform}` });
 
@@ -501,7 +623,7 @@ app.post('/api/post/:platform', (req, res) => {
 });
 
 /** POST /api/upload – Persist media uploads to server disk */
-app.post('/api/upload', (req, res) => {
+app.post('/api/upload', requireAuthentication, (req, res) => {
     try {
         const { fileName = 'file', fileType = '', fileData = '' } = req.body || {};
         if (!fileData) return res.status(400).json({ error: 'No file data provided' });
