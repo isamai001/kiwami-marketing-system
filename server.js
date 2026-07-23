@@ -16,17 +16,25 @@ const path   = require('path');
 const app = express();
 
 // ── Security ──────────────────────────────────────────────────────────────────
+const fs = require('fs');
+const uploadsDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
 app.use(cors({ origin: '*', methods: ['GET', 'POST'], allowedHeaders: ['Content-Type'] }));
 app.use((req, res, next) => {
     res.setHeader('Content-Security-Policy',
         "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; " +
         "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; " +
-        "font-src 'self' https://cdnjs.cloudflare.com; img-src 'self' data: blob:;"
+        "font-src 'self' https://cdnjs.cloudflare.com; img-src 'self' data: blob:; media-src 'self' data: blob:;"
     );
     next();
 });
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ limit: '100mb', extended: true }));
 app.use(express.static(path.join(__dirname)));
+app.use('/uploads', express.static(uploadsDir));
 
 // ── Low-level HTTPS/HTTP GET helper ──────────────────────────────────────────
 function apiGet(rawUrl, headers = {}) {
@@ -490,6 +498,42 @@ app.post('/api/post/:platform', (req, res) => {
 
     console.log(`[${new Date().toISOString()}] POST to ${platform}: ${safe(title)}`);
     res.json({ success: true, platform, message: `Content queued for ${platform}`, timestamp: new Date().toISOString() });
+});
+
+/** POST /api/upload – Persist media uploads to server disk */
+app.post('/api/upload', (req, res) => {
+    try {
+        const { fileName = 'file', fileType = '', fileData = '' } = req.body || {};
+        if (!fileData) return res.status(400).json({ error: 'No file data provided' });
+
+        let buffer;
+        let ext = 'bin';
+
+        const matches = fileData.match(/^data:([^;]+);base64,(.+)$/);
+        if (matches) {
+            const mime = matches[1];
+            buffer = Buffer.from(matches[2], 'base64');
+            const mimeExt = mime.split('/')[1];
+            if (mimeExt) ext = mimeExt.replace(/\+xml.*/, '');
+        } else {
+            buffer = Buffer.from(fileData, 'base64');
+            const originalExt = path.extname(fileName).slice(1);
+            if (originalExt) ext = originalExt;
+        }
+
+        const safeExt = ext.replace(/[^a-zA-Z0-9]/g, '') || 'bin';
+        const uniqueName = `${Date.now()}_${Math.random().toString(36).substr(2, 6)}.${safeExt}`;
+        const filePath = path.join(uploadsDir, uniqueName);
+
+        fs.writeFileSync(filePath, buffer);
+
+        const mediaUrl = `/uploads/${uniqueName}`;
+        console.log(`[${new Date().toISOString()}] Upload saved: ${mediaUrl} (${buffer.length} bytes)`);
+        res.json({ success: true, url: mediaUrl, fileName, fileType });
+    } catch (err) {
+        console.error('Upload error:', err);
+        res.status(500).json({ error: 'Failed to save media upload' });
+    }
 });
 
 app.use((req, res) => res.status(404).json({ error: 'Not found' }));
