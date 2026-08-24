@@ -2,32 +2,11 @@
  * Kiwami Marketing System
  * Backend API Server
  *
- * DROP-IN replacement for server.js
+ * DROP-IN server.js
  *
- * Main analytics behavior:
- *
- *   profile URL
- *        ↓
- *   identify platform
- *        ↓
- *   official API if credential exists
- *        ↓
- *   otherwise fetch public profile URL
- *        ↓
- *   extract publicly available metadata/statistics
- *        ↓
- *   return normalized analytics response
- *
- * Existing frontend API contract preserved:
- *
- * POST /api/login
- * GET  /api/login-status
- * POST /api/logout
- * GET  /api/health
- * POST /api/analytics
- * GET  /api/notifications
- * POST /api/post/:platform
- * POST /api/upload
+ * Main fix:
+ * YouTube post/video count is now retrieved from the channel's
+ * official uploads playlist, with statistics.videoCount as fallback.
  */
 
 require('dotenv').config();
@@ -62,17 +41,17 @@ const LOGIN_ATTEMPT_LIMIT = 5;
 const LOGIN_ATTEMPT_WINDOW_MS = 10 * 60 * 1000;
 const SESSION_TTL_MS = 30 * 60 * 1000;
 
-const REQUEST_TIMEOUT_MS = 20000;
-const MAX_REDIRECTS = 5;
-
-const LINKEDIN_VERSION =
-    process.env.LINKEDIN_VERSION || '202607';
+const REQUEST_TIMEOUT_MS = 15000;
+const MAX_REDIRECTS = 4;
 
 const loginAttempts = new Map();
 const sessions = new Map();
 
+const LINKEDIN_VERSION =
+    process.env.LINKEDIN_VERSION || '202607';
+
 /* ============================================================================
-   UPLOAD DIRECTORY
+   UPLOADS
 ============================================================================ */
 
 const uploadsDir = path.join(__dirname, 'uploads');
@@ -118,7 +97,7 @@ if (configuredFrontendOrigin) {
 }
 
 /* ============================================================================
-   EXPRESS
+   SECURITY
 ============================================================================ */
 
 app.use((req, res, next) => {
@@ -171,7 +150,7 @@ function safe(value, max = 500) {
         .slice(0, max);
 }
 
-function safeToken(value, max = 10000) {
+function safeToken(value, max = 5000) {
     if (typeof value !== 'string') {
         return '';
     }
@@ -180,28 +159,30 @@ function safeToken(value, max = 10000) {
 }
 
 function toNumber(value) {
-    if (typeof value === 'string') {
-        value = value
-            .replace(/,/g, '')
-            .trim();
-    }
-
     const n = Number(value);
 
-    return Number.isFinite(n) ? n : 0;
+    return Number.isFinite(n)
+        ? n
+        : 0;
 }
 
 function round(value, decimals = 2) {
     const factor = Math.pow(10, decimals);
 
     return Math.round(
-        (toNumber(value) + Number.EPSILON) * factor
+        (toNumber(value) + Number.EPSILON) *
+        factor
     ) / factor;
 }
 
 function timingSafeEquals(a, b) {
-    const aBuf = Buffer.from(String(a || ''));
-    const bBuf = Buffer.from(String(b || ''));
+    const aBuf = Buffer.from(
+        String(a || '')
+    );
+
+    const bBuf = Buffer.from(
+        String(b || '')
+    );
 
     if (aBuf.length !== bBuf.length) {
         return false;
@@ -247,71 +228,6 @@ function jsonErrorMessage(
 }
 
 /* ============================================================================
-   NUMBER PARSING
-============================================================================ */
-
-/*
- * Converts things such as:
- *
- * "1.2K"  -> 1200
- * "3.4M"  -> 3400000
- * "2B"    -> 2000000000
- * "12,500" -> 12500
- */
-function parseMetric(value) {
-    if (
-        value === null ||
-        value === undefined
-    ) {
-        return 0;
-    }
-
-    if (typeof value === 'number') {
-        return Number.isFinite(value)
-            ? value
-            : 0;
-    }
-
-    let text = String(value)
-        .trim()
-        .replace(/,/g, '');
-
-    if (!text) {
-        return 0;
-    }
-
-    const match = text.match(
-        /(-?\d+(?:\.\d+)?)\s*([KMBT])?/i
-    );
-
-    if (!match) {
-        return 0;
-    }
-
-    let number = Number(match[1]);
-
-    if (!Number.isFinite(number)) {
-        return 0;
-    }
-
-    const suffix = (
-        match[2] || ''
-    ).toUpperCase();
-
-    if (suffix === 'K') {
-        number *= 1000;
-    } else if (suffix === 'M') {
-        number *= 1000000;
-    } else if (suffix === 'B') {
-        number *= 1000000000;
-    } else if (suffix === 'T') {
-        number *= 1000000000000;
-    }
-
-    return Math.round(number);
-}
-
-/* ============================================================================
    HTTP GET
 ============================================================================ */
 
@@ -333,7 +249,7 @@ function apiGet(
             parsed = new URL(rawUrl);
         } catch {
             return reject(
-                new Error('Invalid URL')
+                new Error('Invalid API URL')
             );
         }
 
@@ -345,6 +261,7 @@ function apiGet(
 
         const options = {
             hostname: parsed.hostname,
+
             port:
                 parsed.port ||
                 (isHttps ? 443 : 80),
@@ -356,12 +273,9 @@ function apiGet(
             method: 'GET',
 
             headers: {
-                Accept:
-                    'text/html,application/json,application/xhtml+xml,*/*;q=0.8',
-
+                Accept: 'application/json',
                 'User-Agent':
-                    'Mozilla/5.0 (compatible; KiwamiMarketingSystem/3.0; +https://kiwamitech.co.ke)',
-
+                    'KiwamiMarketingSystem/3.0',
                 ...headers
             },
 
@@ -375,10 +289,15 @@ function apiGet(
                 response => {
 
                     if (
-                        [301, 302, 303, 307, 308]
-                            .includes(
-                                response.statusCode
-                            ) &&
+                        [
+                            301,
+                            302,
+                            303,
+                            307,
+                            308
+                        ].includes(
+                            response.statusCode
+                        ) &&
                         response.headers.location
                     ) {
                         const redirectUrl =
@@ -408,53 +327,22 @@ function apiGet(
                         'data',
                         chunk => {
                             data += chunk;
-
-                            /*
-                             * Prevent enormous responses from consuming
-                             * the server unnecessarily.
-                             */
-                            if (
-                                data.length >
-                                15 * 1024 * 1024
-                            ) {
-                                request.destroy(
-                                    new Error(
-                                        'Response too large'
-                                    )
-                                );
-                            }
                         }
                     );
 
                     response.on(
                         'end',
                         () => {
-                            const contentType =
-                                String(
-                                    response.headers[
-                                        'content-type'
-                                    ] || ''
-                                ).toLowerCase();
 
-                            let body =
-                                data;
+                            let body;
 
-                            if (
-                                contentType.includes(
-                                    'application/json'
-                                ) ||
-                                contentType.includes(
-                                    '+json'
-                                )
-                            ) {
-                                try {
-                                    body =
-                                        data
-                                            ? JSON.parse(data)
-                                            : {};
-                                } catch {
-                                    body = data;
-                                }
+                            try {
+                                body =
+                                    data
+                                        ? JSON.parse(data)
+                                        : {};
+                            } catch {
+                                body = data;
                             }
 
                             resolve({
@@ -464,10 +352,7 @@ function apiGet(
                                 headers:
                                     response.headers || {},
 
-                                body,
-
-                                raw:
-                                    data
+                                body
                             });
                         }
                     );
@@ -495,728 +380,135 @@ function apiGet(
 }
 
 /* ============================================================================
-   PUBLIC URL FETCHING
+   AUTHENTICATION
 ============================================================================ */
 
-/*
- * This is the important addition.
- *
- * When no official API credential is available, the server actually
- * retrieves the supplied profile URL.
- */
-async function fetchPublicPage(
-    profileUrl
-) {
-    try {
-        const response =
-            await apiGet(
-                profileUrl,
-                {
-                    Accept:
-                        'text/html,application/xhtml+xml'
-                }
+function getSessionCookie(req) {
+    const cookieHeader =
+        req.headers.cookie || '';
+
+    const cookie =
+        cookieHeader
+            .split(';')
+            .map(part => part.trim())
+            .find(part =>
+                part.startsWith(
+                    'kiwami_session='
+                )
             );
 
-        if (
-            response.status < 200 ||
-            response.status >= 400
-        ) {
-            return {
-                ok: false,
-                status:
-                    response.status,
-                html:
-                    typeof response.body === 'string'
-                        ? response.body
-                        : response.raw || '',
-                error:
-                    `Profile page returned HTTP ${response.status}`
-            };
-        }
-
-        return {
-            ok: true,
-            status:
-                response.status,
-            html:
-                typeof response.body === 'string'
-                    ? response.body
-                    : response.raw || ''
-        };
-
-    } catch (err) {
-        return {
-            ok: false,
-            status: 0,
-            html: '',
-            error:
-                err?.message ||
-                'Could not retrieve profile URL'
-        };
-    }
-}
-
-/* ============================================================================
-   HTML HELPERS
-============================================================================ */
-
-function decodeHtml(text) {
-    if (!text) {
+    if (!cookie) {
         return '';
     }
 
-    return String(text)
-        .replace(/&amp;/gi, '&')
-        .replace(/&quot;/gi, '"')
-        .replace(/&#39;/gi, "'")
-        .replace(/&apos;/gi, "'")
-        .replace(/&lt;/gi, '<')
-        .replace(/&gt;/gi, '>')
-        .replace(/&#x27;/gi, "'")
-        .replace(/&#x2F;/gi, '/')
-        .replace(/&#(\d+);/g, (_, n) =>
-            String.fromCharCode(
-                Number(n)
-            )
-        );
-}
-
-function stripTags(text) {
-    return decodeHtml(
-        String(text || '')
-            .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-            .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-            .replace(/<[^>]+>/g, ' ')
-            .replace(/\s+/g, ' ')
-            .trim()
-    );
-}
-
-function getMetaContent(
-    html,
-    attribute,
-    value
-) {
-    if (!html) {
-        return '';
-    }
-
-    const escaped =
-        String(value)
-            .replace(
-                /[.*+?^${}()|[\]\\]/g,
-                '\\$&'
-            );
-
-    const regex =
-        new RegExp(
-            `<meta[^>]+${attribute}\\s*=\\s*["']${escaped}["'][^>]+content\\s*=\\s*["']([^"']*)["'][^>]*>`,
-            'i'
-        );
-
-    const match =
-        html.match(regex);
-
-    if (match) {
-        return decodeHtml(
-            match[1]
-        );
-    }
-
-    /*
-     * Some pages put content before the property/name attribute.
-     */
-    const reverseRegex =
-        new RegExp(
-            `<meta[^>]+content\\s*=\\s*["']([^"']*)["'][^>]+${attribute}\\s*=\\s*["']${escaped}["'][^>]*>`,
-            'i'
-        );
-
-    const reverseMatch =
-        html.match(reverseRegex);
-
-    return reverseMatch
-        ? decodeHtml(
-            reverseMatch[1]
+    return cookie
+        .substring(
+            'kiwami_session='.length
         )
-        : '';
+        .trim();
 }
 
-function getMetaProperty(
-    html,
-    property
-) {
-    return getMetaContent(
-        html,
-        'property',
-        property
+function createSessionCookie(token) {
+    const attributes = [
+        'Path=/',
+        'HttpOnly',
+        'SameSite=Lax',
+        `Max-Age=${Math.floor(
+            SESSION_TTL_MS / 1000
+        )}`
+    ];
+
+    if (
+        process.env.NODE_ENV ===
+        'production'
+    ) {
+        attributes.push('Secure');
+    }
+
+    return (
+        `kiwami_session=${token}; ` +
+        attributes.join('; ')
     );
 }
 
-function getMetaName(
-    html,
-    name
-) {
-    return getMetaContent(
-        html,
-        'name',
-        name
+function clearSessionCookie(res) {
+    const attributes = [
+        'Path=/',
+        'HttpOnly',
+        'SameSite=Lax',
+        'Max-Age=0'
+    ];
+
+    if (
+        process.env.NODE_ENV ===
+        'production'
+    ) {
+        attributes.push('Secure');
+    }
+
+    res.setHeader(
+        'Set-Cookie',
+        `kiwami_session=; ${attributes.join('; ')}`
     );
 }
 
-function extractJsonLd(
-    html
+function requireAuthentication(
+    req,
+    res,
+    next
 ) {
-    const results = [];
+    const token =
+        getSessionCookie(req);
 
-    if (!html) {
-        return results;
+    if (!token) {
+        return res
+            .status(401)
+            .json({
+                error:
+                    'Authentication required'
+            });
     }
 
-    const regex =
-        /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+    const session =
+        sessions.get(token);
 
-    let match;
-
-    while (
-        (match = regex.exec(html))
-    ) {
-        try {
-            const parsed =
-                JSON.parse(
-                    match[1].trim()
-                );
-
-            if (
-                Array.isArray(parsed)
-            ) {
-                results.push(
-                    ...parsed
-                );
-            } else {
-                results.push(
-                    parsed
-                );
-            }
-        } catch {
-            /*
-             * Some social sites embed malformed JSON-LD.
-             * Ignore it and continue.
-             */
-        }
-    }
-
-    return results;
-}
-
-function recursiveFindValue(
-    object,
-    keys,
-    depth = 0
-) {
-    if (
-        !object ||
-        depth > 8
-    ) {
-        return undefined;
-    }
-
-    const wanted =
-        new Set(
-            keys.map(
-                key =>
-                    String(key)
-                        .toLowerCase()
-            )
-        );
-
-    if (
-        typeof object !== 'object'
-    ) {
-        return undefined;
-    }
-
-    for (
-        const [key, value]
-        of Object.entries(object)
-    ) {
-        if (
-            wanted.has(
-                String(key)
-                    .toLowerCase()
-            )
-        ) {
-            return value;
-        }
-    }
-
-    for (
-        const value
-        of Object.values(object)
-    ) {
-        if (
-            value &&
-            typeof value === 'object'
-        ) {
-            const found =
-                recursiveFindValue(
-                    value,
-                    keys,
-                    depth + 1
-                );
-
-            if (
-                found !== undefined
-            ) {
-                return found;
-            }
-        }
-    }
-
-    return undefined;
-}
-
-function findAllValues(
-    object,
-    keys,
-    output = [],
-    depth = 0
-) {
-    if (
-        !object ||
-        depth > 8
-    ) {
-        return output;
+    if (!session) {
+        return res
+            .status(401)
+            .json({
+                error:
+                    'Session expired or invalid'
+            });
     }
 
     if (
-        typeof object !== 'object'
+        session.expiresAt <
+        Date.now()
     ) {
-        return output;
+        sessions.delete(token);
+
+        return res
+            .status(401)
+            .json({
+                error:
+                    'Session expired or invalid'
+            });
     }
 
-    const wanted =
-        new Set(
-            keys.map(
-                key =>
-                    String(key)
-                        .toLowerCase()
-            )
-        );
+    session.expiresAt =
+        Date.now() +
+        SESSION_TTL_MS;
 
-    for (
-        const [key, value]
-        of Object.entries(object)
-    ) {
-        if (
-            wanted.has(
-                String(key)
-                    .toLowerCase()
-            )
-        ) {
-            output.push(value);
-        }
-
-        if (
-            value &&
-            typeof value === 'object'
-        ) {
-            findAllValues(
-                value,
-                keys,
-                output,
-                depth + 1
-            );
-        }
-    }
-
-    return output;
-}
-
-function firstPositiveMetric(
-    values
-) {
-    for (
-        const value
-        of values
-    ) {
-        const n =
-            parseMetric(value);
-
-        if (n > 0) {
-            return n;
-        }
-    }
-
-    return 0;
-}
-
-function publicPageBaseData(
-    html
-) {
-    const jsonLd =
-        extractJsonLd(html);
-
-    const title =
-        getMetaProperty(
-            html,
-            'og:title'
-        ) ||
-        getMetaName(
-            html,
-            'twitter:title'
-        ) ||
-        (
-            html.match(
-                /<title[^>]*>([\s\S]*?)<\/title>/i
-            ) || []
-        )[1] ||
-        '';
-
-    const description =
-        getMetaProperty(
-            html,
-            'og:description'
-        ) ||
-        getMetaName(
-            html,
-            'description'
-        ) ||
-        getMetaName(
-            html,
-            'twitter:description'
-        ) ||
-        '';
-
-    const image =
-        getMetaProperty(
-            html,
-            'og:image'
-        ) ||
-        getMetaName(
-            html,
-            'twitter:image'
-        ) ||
-        '';
-
-    return {
-        title:
-            stripTags(title),
-
-        description:
-            stripTags(description),
-
-        image,
-
-        jsonLd
-    };
-}
-
-/* ============================================================================
-   PUBLIC NUMBER EXTRACTION
-============================================================================ */
-
-function extractPublicMetrics(
-    html,
-    platform
-) {
-    const base =
-        publicPageBaseData(html);
-
-    const jsonLd =
-        base.jsonLd;
-
-    const jsonLdFollowers =
-        findAllValues(
-            jsonLd,
-            [
-                'followers',
-                'followerCount',
-                'subscriberCount',
-                'userInteractionCount'
-            ]
-        );
-
-    const jsonLdViews =
-        findAllValues(
-            jsonLd,
-            [
-                'viewCount',
-                'views',
-                'interactionCount'
-            ]
-        );
-
-    const jsonLdLikes =
-        findAllValues(
-            jsonLd,
-            [
-                'likeCount',
-                'likes'
-            ]
-        );
-
-    const jsonLdPosts =
-        findAllValues(
-            jsonLd,
-            [
-                'videoCount',
-                'postCount',
-                'numberOfItems',
-                'interactionCount'
-            ]
-        );
-
-    let followers =
-        firstPositiveMetric(
-            jsonLdFollowers
-        );
-
-    let views =
-        firstPositiveMetric(
-            jsonLdViews
-        );
-
-    let likes =
-        firstPositiveMetric(
-            jsonLdLikes
-        );
-
-    let posts =
-        firstPositiveMetric(
-            jsonLdPosts
-        );
-
-    /*
-     * Generic visible-text extraction.
-     *
-     * These are intentionally conservative.
-     */
-    const text =
-        stripTags(html);
-
-    const followerPatterns = [
-        /([\d.,]+[KMB]?)\s*(?:followers|follower)/i,
-        /(?:followers|follower)[^0-9]{0,30}([\d.,]+[KMB]?)/i,
-        /([\d.,]+[KMB]?)\s*(?:subscribers|subscriber)/i,
-        /(?:subscribers|subscriber)[^0-9]{0,30}([\d.,]+[KMB]?)/i
-    ];
-
-    const viewPatterns = [
-        /([\d.,]+[KMB]?)\s*(?:views|view)/i,
-        /(?:views|view)[^0-9]{0,30}([\d.,]+[KMB]?)/i
-    ];
-
-    const likePatterns = [
-        /([\d.,]+[KMB]?)\s*(?:likes|like)/i,
-        /(?:likes|like)[^0-9]{0,30}([\d.,]+[KMB]?)/i
-    ];
-
-    const postPatterns = [
-        /([\d.,]+[KMB]?)\s*(?:posts|post)/i,
-        /([\d.,]+[KMB]?)\s*(?:videos|video)/i
-    ];
-
-    function patternValue(
-        patterns
-    ) {
-        for (
-            const pattern
-            of patterns
-        ) {
-            const match =
-                text.match(pattern);
-
-            if (match) {
-                const n =
-                    parseMetric(
-                        match[1]
-                    );
-
-                if (n > 0) {
-                    return n;
-                }
-            }
-        }
-
-        return 0;
-    }
-
-    if (!followers) {
-        followers =
-            patternValue(
-                followerPatterns
-            );
-    }
-
-    if (!views) {
-        views =
-            patternValue(
-                viewPatterns
-            );
-    }
-
-    if (!likes) {
-        likes =
-            patternValue(
-                likePatterns
-            );
-    }
-
-    if (!posts) {
-        posts =
-            patternValue(
-                postPatterns
-            );
-    }
-
-    /*
-     * Platform-specific JSON strings commonly used in public pages.
-     */
-    const followerJsonPatterns = [
-        /"followerCount"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
-        /"followers_count"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
-        /"followers"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
-        /"subscriberCount"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
-        /"subscriber_count"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i
-    ];
-
-    const viewJsonPatterns = [
-        /"viewCount"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
-        /"view_count"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
-        /"views"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i
-    ];
-
-    const likeJsonPatterns = [
-        /"likeCount"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
-        /"like_count"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
-        /"likes"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i
-    ];
-
-    const postJsonPatterns = [
-        /"videoCount"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
-        /"video_count"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
-        /"postCount"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
-        /"media_count"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i
-    ];
-
-    function regexMetric(
-        patterns
-    ) {
-        for (
-            const pattern
-            of patterns
-        ) {
-            const match =
-                html.match(pattern);
-
-            if (match) {
-                const n =
-                    parseMetric(
-                        match[1]
-                    );
-
-                if (n > 0) {
-                    return n;
-                }
-            }
-        }
-
-        return 0;
-    }
-
-    if (!followers) {
-        followers =
-            regexMetric(
-                followerJsonPatterns
-            );
-    }
-
-    if (!views) {
-        views =
-            regexMetric(
-                viewJsonPatterns
-            );
-    }
-
-    if (!likes) {
-        likes =
-            regexMetric(
-                likeJsonPatterns
-            );
-    }
-
-    if (!posts) {
-        posts =
-            regexMetric(
-                postJsonPatterns
-            );
-    }
-
-    /*
-     * YouTube has particularly useful public structured data.
-     */
-    if (
-        platform === 'youtube'
-    ) {
-        const subscriberMatch =
-            html.match(
-                /"subscriberCountText"[\s\S]{0,500}?"simpleText"\s*:\s*"([^"]+)"/i
-            );
-
-        if (
-            !followers &&
-            subscriberMatch
-        ) {
-            followers =
-                parseMetric(
-                    subscriberMatch[1]
-                );
-        }
-
-        const videoCountMatch =
-            html.match(
-                /"videoCountText"[\s\S]{0,500}?"simpleText"\s*:\s*"([^"]+)"/i
-            );
-
-        if (
-            !posts &&
-            videoCountMatch
-        ) {
-            posts =
-                parseMetric(
-                    videoCountMatch[1]
-                );
-        }
-    }
-
-    return {
-        name:
-            base.title,
-
-        description:
-            base.description,
-
-        image:
-            base.image,
-
-        followers,
-        views,
-        likes,
-        posts
-    };
+    next();
 }
 
 /* ============================================================================
    URL PARSERS
 ============================================================================ */
 
-function parseYouTube(
-    rawUrl
-) {
+function parseYouTube(rawUrl) {
     try {
-        const u =
-            new URL(rawUrl);
+        const u = new URL(rawUrl);
 
         const hostname =
             u.hostname
@@ -1316,24 +608,10 @@ function parseYouTube(
     return null;
 }
 
-function parseTwitterUsername(
-    rawUrl
-) {
+function parseTwitterUsername(rawUrl) {
     try {
         const u =
             new URL(rawUrl);
-
-        const hostname =
-            u.hostname
-                .replace(/^www\./, '')
-                .toLowerCase();
-
-        if (
-            hostname !== 'twitter.com' &&
-            hostname !== 'x.com'
-        ) {
-            return null;
-        }
 
         const pathname =
             u.pathname.replace(
@@ -1374,9 +652,7 @@ function parseTwitterUsername(
     }
 }
 
-function parseFacebookId(
-    rawUrl
-) {
+function parseFacebookId(rawUrl) {
     try {
         const u =
             new URL(rawUrl);
@@ -1398,18 +674,12 @@ function parseFacebookId(
             return null;
         }
 
-        const pieces =
-            pathname.split('/');
-
-        if (
-            pieces[0].toLowerCase() === 'pages' &&
-            pieces[1]
-        ) {
-            return pieces[2] || pieces[1];
-        }
+        const first =
+            pathname.split('/')[0];
 
         if (
             [
+                'pages',
                 'groups',
                 'events',
                 'watch',
@@ -1418,22 +688,20 @@ function parseFacebookId(
                 'sharer',
                 'reel'
             ].includes(
-                pieces[0].toLowerCase()
+                first.toLowerCase()
             )
         ) {
             return null;
         }
 
-        return pieces[0];
+        return first;
 
     } catch {
         return null;
     }
 }
 
-function parseInstagramUsername(
-    rawUrl
-) {
+function parseInstagramUsername(rawUrl) {
     try {
         const u =
             new URL(rawUrl);
@@ -1455,9 +723,7 @@ function parseInstagramUsername(
                 'accounts',
                 'explore',
                 'reels',
-                'direct',
-                'p',
-                'stories'
+                'direct'
             ].includes(
                 first.toLowerCase()
             )
@@ -1475,9 +741,7 @@ function parseInstagramUsername(
     }
 }
 
-function parseLinkedInOrg(
-    rawUrl
-) {
+function parseLinkedInOrg(rawUrl) {
     try {
         const u =
             new URL(rawUrl);
@@ -1496,9 +760,7 @@ function parseLinkedInOrg(
     }
 }
 
-function parseTikTokUsername(
-    rawUrl
-) {
+function parseTikTokUsername(rawUrl) {
     try {
         const u =
             new URL(rawUrl);
@@ -1521,263 +783,462 @@ function parseTikTokUsername(
    YOUTUBE
 ============================================================================ */
 
+/*
+ * IMPORTANT:
+ *
+ * This function is the corrected YouTube implementation.
+ *
+ * It gets:
+ *
+ *   subscribers -> statistics.subscriberCount
+ *   views       -> statistics.viewCount
+ *   posts       -> uploads playlist itemCount
+ *
+ * The uploads playlist is obtained from:
+ *
+ *   contentDetails.relatedPlaylists.uploads
+ *
+ * YouTube documents this as the playlist containing the channel's
+ * uploaded videos.
+ */
+
 async function fetchYouTube(
     profileUrl,
     apiKey
 ) {
+    if (!apiKey) {
+        return {
+            status: 'no_credentials',
+
+            error:
+                'YouTube API Key not set',
+
+            setup:
+                'Add your YouTube Data API v3 key in the frontend or YOUTUBE_API_KEY environment variable.'
+        };
+    }
+
+    const parsed =
+        parseYouTube(profileUrl);
+
+    if (!parsed) {
+        return {
+            status: 'invalid_url',
+
+            error:
+                'Cannot parse YouTube channel URL'
+        };
+    }
+
+    const params =
+        new URLSearchParams();
+
     /*
-     * First try the official YouTube API.
+     * We specifically request BOTH:
+     *
+     * statistics
+     * contentDetails
+     * snippet
      */
-    if (apiKey) {
-        const parsed =
-            parseYouTube(
-                profileUrl
+    params.set(
+        'part',
+        'statistics,snippet,contentDetails'
+    );
+
+    params.set(
+        'key',
+        apiKey
+    );
+
+    /* ---------------------------------------------------------------
+       FIND CHANNEL
+    ---------------------------------------------------------------- */
+
+    if (parsed.type === 'id') {
+
+        params.set(
+            'id',
+            parsed.value
+        );
+
+    } else if (
+        parsed.type === 'handle'
+    ) {
+
+        params.set(
+            'forHandle',
+            parsed.value
+        );
+
+    } else if (
+        parsed.type === 'forUsername'
+    ) {
+
+        params.set(
+            'forUsername',
+            parsed.value
+        );
+
+    } else if (
+        parsed.type === 'search'
+    ) {
+
+        const searchParams =
+            new URLSearchParams();
+
+        searchParams.set(
+            'part',
+            'snippet'
+        );
+
+        searchParams.set(
+            'type',
+            'channel'
+        );
+
+        searchParams.set(
+            'maxResults',
+            '5'
+        );
+
+        searchParams.set(
+            'q',
+            parsed.value
+        );
+
+        searchParams.set(
+            'key',
+            apiKey
+        );
+
+        const searchRes =
+            await apiGet(
+                'https://www.googleapis.com/youtube/v3/search?' +
+                searchParams.toString()
             );
 
-        if (parsed) {
-            const params =
+        if (
+            searchRes.status !== 200
+        ) {
+            return {
+                status: 'api_error',
+
+                error:
+                    jsonErrorMessage(
+                        searchRes.body,
+                        `YouTube search failed (HTTP ${searchRes.status})`
+                    )
+            };
+        }
+
+        const result =
+            searchRes.body?.items?.[0];
+
+        const channelId =
+            result?.snippet?.channelId ||
+            result?.id?.channelId;
+
+        if (!channelId) {
+            return {
+                status: 'not_found',
+
+                error:
+                    'YouTube channel could not be found from the supplied URL.'
+            };
+        }
+
+        params.set(
+            'id',
+            channelId
+        );
+    }
+
+    /* ---------------------------------------------------------------
+       GET CHANNEL
+    ---------------------------------------------------------------- */
+
+    const channelRes =
+        await apiGet(
+            'https://www.googleapis.com/youtube/v3/channels?' +
+            params.toString()
+        );
+
+    if (
+        channelRes.status !== 200
+    ) {
+        return {
+            status: 'api_error',
+
+            error:
+                jsonErrorMessage(
+                    channelRes.body,
+                    `YouTube API returned HTTP ${channelRes.status}`
+                )
+        };
+    }
+
+    const channel =
+        channelRes.body?.items?.[0];
+
+    if (!channel) {
+        return {
+            status: 'not_found',
+
+            error:
+                'YouTube channel not found. Check that the channel URL is correct.'
+        };
+    }
+
+    const statistics =
+        channel.statistics || {};
+
+    const contentDetails =
+        channel.contentDetails || {};
+
+    /* ---------------------------------------------------------------
+       BASIC STATS
+    ---------------------------------------------------------------- */
+
+    const subscribers =
+        toNumber(
+            statistics.subscriberCount
+        );
+
+    const views =
+        toNumber(
+            statistics.viewCount
+        );
+
+    /*
+     * YouTube's standard channel statistics also exposes videoCount.
+     *
+     * We keep it as the FIRST fallback.
+     */
+    let posts =
+        toNumber(
+            statistics.videoCount
+        );
+
+    /* ---------------------------------------------------------------
+       UPLOADS PLAYLIST
+    ---------------------------------------------------------------- */
+
+    const uploadsPlaylistId =
+        contentDetails
+            ?.relatedPlaylists
+            ?.uploads;
+
+    /*
+     * This is the important part.
+     *
+     * Instead of trusting videoCount alone, retrieve the official
+     * uploads playlist and its itemCount.
+     */
+    if (uploadsPlaylistId) {
+
+        try {
+
+            const playlistParams =
                 new URLSearchParams();
 
-            params.set(
+            playlistParams.set(
                 'part',
-                'snippet,statistics'
+                'contentDetails'
             );
 
-            params.set(
+            playlistParams.set(
+                'id',
+                uploadsPlaylistId
+            );
+
+            playlistParams.set(
                 'key',
                 apiKey
             );
 
-            if (
-                parsed.type === 'id'
-            ) {
-                params.set(
-                    'id',
-                    parsed.value
+            const playlistRes =
+                await apiGet(
+                    'https://www.googleapis.com/youtube/v3/playlists?' +
+                    playlistParams.toString()
                 );
-            }
-
-            else if (
-                parsed.type === 'handle'
-            ) {
-                params.set(
-                    'forHandle',
-                    parsed.value
-                );
-            }
-
-            else if (
-                parsed.type === 'forUsername'
-            ) {
-                params.set(
-                    'forUsername',
-                    parsed.value
-                );
-            }
-
-            else if (
-                parsed.type === 'search'
-            ) {
-                const searchParams =
-                    new URLSearchParams();
-
-                searchParams.set(
-                    'part',
-                    'snippet'
-                );
-
-                searchParams.set(
-                    'type',
-                    'channel'
-                );
-
-                searchParams.set(
-                    'maxResults',
-                    '5'
-                );
-
-                searchParams.set(
-                    'q',
-                    parsed.value
-                );
-
-                searchParams.set(
-                    'key',
-                    apiKey
-                );
-
-                const searchRes =
-                    await apiGet(
-                        `https://www.googleapis.com/youtube/v3/search?${searchParams.toString()}`
-                    );
-
-                if (
-                    searchRes.status === 200
-                ) {
-                    const result =
-                        searchRes.body
-                            ?.items?.[0];
-
-                    const channelId =
-                        result?.snippet?.channelId ||
-                        result?.id?.channelId;
-
-                    if (channelId) {
-                        params.set(
-                            'id',
-                            channelId
-                        );
-                    }
-                }
-            }
 
             if (
-                params.has('id') ||
-                params.has('forHandle') ||
-                params.has('forUsername')
+                playlistRes.status === 200
             ) {
-                const response =
-                    await apiGet(
-                        `https://www.googleapis.com/youtube/v3/channels?${params.toString()}`
+
+                const playlist =
+                    playlistRes.body
+                        ?.items?.[0];
+
+                const playlistCount =
+                    toNumber(
+                        playlist
+                            ?.contentDetails
+                            ?.itemCount
                     );
 
+                /*
+                 * Only replace posts if YouTube actually gave us
+                 * a valid count.
+                 */
                 if (
-                    response.status === 200
+                    playlistCount > 0
                 ) {
-                    const item =
-                        response.body
-                            ?.items?.[0];
-
-                    if (item) {
-                        const statistics =
-                            item.statistics || {};
-
-                        const followers =
-                            toNumber(
-                                statistics.subscriberCount
-                            );
-
-                        const views =
-                            toNumber(
-                                statistics.viewCount
-                            );
-
-                        const posts =
-                            toNumber(
-                                statistics.videoCount
-                            );
-
-                        return {
-                            status: 'ok',
-                            source: 'youtube_api',
-
-                            name:
-                                item.snippet?.title ||
-                                'YouTube Channel',
-
-                            followers,
-                            views,
-                            likes: 0,
-                            posts,
-
-                            engagement:
-                                followers > 0 &&
-                                views > 0
-                                    ? round(
-                                        (
-                                            views /
-                                            followers
-                                        ) * 100,
-                                        2
-                                    )
-                                    : 0
-                        };
-                    }
+                    posts =
+                        playlistCount;
                 }
+
+            } else {
+                console.warn(
+                    'YouTube uploads playlist request failed:',
+                    playlistRes.status,
+                    playlistRes.body
+                );
             }
+
+        } catch (playlistError) {
+
+            console.warn(
+                'YouTube uploads playlist lookup failed:',
+                playlistError.message
+            );
         }
     }
 
     /*
-     * No API key, or API lookup failed.
-     * Actually fetch the URL.
+     * If both values happen to be zero, make one more attempt using
+     * playlistItems.list.
+     *
+     * This is deliberately limited to the first page so we do not
+     * waste a large amount of YouTube API quota.
      */
-    const page =
-        await fetchPublicPage(
-            profileUrl
-        );
+    if (
+        posts === 0 &&
+        uploadsPlaylistId
+    ) {
 
-    if (!page.ok) {
-        return {
-            status: 'unavailable',
-            source: 'public_url',
-            error:
-                page.error ||
-                'Could not retrieve YouTube profile URL'
-        };
+        try {
+
+            const itemParams =
+                new URLSearchParams();
+
+            itemParams.set(
+                'part',
+                'contentDetails'
+            );
+
+            itemParams.set(
+                'playlistId',
+                uploadsPlaylistId
+            );
+
+            itemParams.set(
+                'maxResults',
+                '1'
+            );
+
+            itemParams.set(
+                'key',
+                apiKey
+            );
+
+            const itemRes =
+                await apiGet(
+                    'https://www.googleapis.com/youtube/v3/playlistItems?' +
+                    itemParams.toString()
+                );
+
+            if (
+                itemRes.status === 200
+            ) {
+
+                const itemCount =
+                    toNumber(
+                        itemRes.body
+                            ?.pageInfo
+                            ?.totalResults
+                    );
+
+                if (
+                    itemCount > 0
+                ) {
+                    posts =
+                        itemCount;
+                }
+            }
+
+        } catch (itemError) {
+
+            console.warn(
+                'YouTube playlist item lookup failed:',
+                itemError.message
+            );
+        }
     }
 
-    const metrics =
-        extractPublicMetrics(
-            page.html,
-            'youtube'
-        );
+    /*
+     * Likes are not available as one public lifetime channel total
+     * from channels.list.
+     *
+     * Therefore we correctly leave it at 0 instead of inventing it.
+     */
+    const likes = 0;
+
+    /*
+     * Keep the frontend's existing engagement field.
+     *
+     * This is NOT a true YouTube Analytics engagement rate because
+     * public channel data does not provide all required lifetime
+     * interaction metrics.
+     */
+    let engagement = 0;
 
     if (
-        !metrics.followers &&
-        !metrics.views &&
-        !metrics.posts
+        subscribers > 0 &&
+        views > 0
     ) {
-        return {
-            status: 'partial',
-            source: 'public_url',
-
-            name:
-                metrics.name ||
-                'YouTube Channel',
-
-            followers: 0,
-            views: 0,
-            likes: 0,
-            posts: 0,
-            engagement: 0,
-
-            error:
-                'YouTube loaded the public page, but usable channel statistics were not publicly exposed. Add YOUTUBE_API_KEY for reliable statistics.'
-        };
+        engagement =
+            round(
+                (
+                    views /
+                    subscribers
+                ) * 100,
+                2
+            );
     }
+
+    console.log(
+        '[YouTube]',
+        channel.snippet?.title ||
+        parsed.value ||
+        'Channel',
+        '| subscribers:',
+        subscribers,
+        '| views:',
+        views,
+        '| posts:',
+        posts,
+        '| uploads playlist:',
+        uploadsPlaylistId || 'none'
+    );
 
     return {
         status: 'ok',
-        source: 'public_url',
 
         name:
-            metrics.name ||
+            channel.snippet?.title ||
             'YouTube Channel',
 
         followers:
-            metrics.followers,
+            subscribers,
 
-        views:
-            metrics.views,
+        views,
 
-        likes:
-            metrics.likes,
+        likes,
 
-        posts:
-            metrics.posts,
+        posts,
 
-        engagement:
-            metrics.followers > 0 &&
-            metrics.views > 0
-                ? round(
-                    (
-                        metrics.views /
-                        metrics.followers
-                    ) * 100,
-                    2
-                )
-                : 0
+        engagement
     };
 }
 
@@ -1789,6 +1250,18 @@ async function fetchTwitter(
     profileUrl,
     bearerToken
 ) {
+    if (!bearerToken) {
+        return {
+            status: 'no_credentials',
+
+            error:
+                'Twitter/X Bearer Token not set',
+
+            setup:
+                'Add your X API Bearer Token in the frontend or TWITTER_BEARER environment variable.'
+        };
+    }
+
     const username =
         parseTwitterUsername(
             profileUrl
@@ -1797,158 +1270,135 @@ async function fetchTwitter(
     if (!username) {
         return {
             status: 'invalid_url',
+
             error:
-                'Cannot parse X/Twitter profile URL'
+                'Cannot parse Twitter/X profile URL'
         };
     }
 
-    /*
-     * Official API first.
-     */
-    if (bearerToken) {
-        const endpoint =
-            `https://api.twitter.com/2/users/by/username/` +
-            `${encodeURIComponent(username)}` +
-            `?user.fields=${encodeURIComponent(
-                'public_metrics,name,username,description'
-            )}`;
+    const fields =
+        'public_metrics,name,description,username';
 
-        const response =
-            await apiGet(
-                endpoint,
-                {
-                    Authorization:
-                        `Bearer ${bearerToken}`
-                }
-            );
+    const endpoint =
+        'https://api.twitter.com/2/users/by/username/' +
+        encodeURIComponent(username) +
+        '?user.fields=' +
+        encodeURIComponent(fields);
 
-        if (
-            response.status === 200 &&
-            response.body?.data
-        ) {
-            const data =
-                response.body.data;
-
-            const metrics =
-                data.public_metrics || {};
-
-            const followers =
-                toNumber(
-                    metrics.followers_count
-                );
-
-            const posts =
-                toNumber(
-                    metrics.tweet_count
-                );
-
-            const likes =
-                toNumber(
-                    metrics.like_count
-                );
-
-            return {
-                status: 'ok',
-                source: 'x_api',
-
-                name:
-                    data.name ||
-                    data.username ||
-                    username,
-
-                followers,
-                views: 0,
-                likes,
-                posts,
-
-                engagement:
-                    followers > 0
-                        ? round(
-                            (
-                                likes /
-                                followers
-                            ) * 100,
-                            2
-                        )
-                        : 0
-            };
-        }
-    }
-
-    /*
-     * Public URL fallback.
-     */
-    const page =
-        await fetchPublicPage(
-            profileUrl
-        );
-
-    if (!page.ok) {
-        return {
-            status: 'unavailable',
-            source: 'public_url',
-            error:
-                page.error ||
-                'Could not retrieve X/Twitter profile'
-        };
-    }
-
-    const metrics =
-        extractPublicMetrics(
-            page.html,
-            'twitter'
+    const res =
+        await apiGet(
+            endpoint,
+            {
+                Authorization:
+                    `Bearer ${bearerToken}`
+            }
         );
 
     if (
-        !metrics.followers &&
-        !metrics.likes &&
-        !metrics.posts
+        res.status === 401
     ) {
         return {
-            status: 'partial',
-            source: 'public_url',
-
-            name:
-                metrics.name ||
-                `@${username}`,
-
-            followers: 0,
-            views: 0,
-            likes: 0,
-            posts: 0,
-            engagement: 0,
+            status: 'api_error',
 
             error:
-                'X/Twitter loaded the profile page, but account statistics were not publicly exposed to the server. Add TWITTER_BEARER for reliable statistics.'
+                'Invalid or expired Twitter/X Bearer Token'
         };
     }
 
+    if (
+        res.status === 403
+    ) {
+        return {
+            status: 'api_error',
+
+            error:
+                jsonErrorMessage(
+                    res.body,
+                    'Twitter/X API access was forbidden.'
+                )
+        };
+    }
+
+    if (
+        res.status === 404
+    ) {
+        return {
+            status: 'not_found',
+
+            error:
+                `Twitter/X user @${username} was not found`
+        };
+    }
+
+    if (
+        res.status !== 200
+    ) {
+        return {
+            status: 'api_error',
+
+            error:
+                jsonErrorMessage(
+                    res.body,
+                    `Twitter/X API returned HTTP ${res.status}`
+                )
+        };
+    }
+
+    const data =
+        res.body?.data;
+
+    const metrics =
+        data?.public_metrics;
+
+    if (
+        !data ||
+        !metrics
+    ) {
+        return {
+            status: 'api_error',
+
+            error:
+                'Twitter/X returned an unexpected response'
+        };
+    }
+
+    const followers =
+        toNumber(
+            metrics.followers_count
+        );
+
+    const posts =
+        toNumber(
+            metrics.tweet_count
+        );
+
+    const likes =
+        toNumber(
+            metrics.like_count
+        );
+
     return {
         status: 'ok',
-        source: 'public_url',
 
         name:
-            metrics.name ||
-            `@${username}`,
+            data.name ||
+            data.username ||
+            username,
 
-        followers:
-            metrics.followers,
+        followers,
 
-        views:
-            metrics.views,
+        views: 0,
 
-        likes:
-            metrics.likes,
+        likes,
 
-        posts:
-            metrics.posts,
+        posts,
 
         engagement:
-            metrics.followers > 0
+            followers > 0
                 ? round(
                     (
-                        metrics.likes /
-                        metrics.followers
+                        likes /
+                        followers
                     ) * 100,
                     2
                 )
@@ -1964,209 +1414,154 @@ async function fetchFacebook(
     profileUrl,
     accessToken
 ) {
+    if (!accessToken) {
+        return {
+            status: 'no_credentials',
+
+            error:
+                'Facebook Page Access Token not set',
+
+            setup:
+                'Add a valid Facebook Page Access Token in the frontend or FB_TOKEN environment variable.'
+        };
+    }
+
     const pageId =
         parseFacebookId(
             profileUrl
         );
 
-    /*
-     * Official Meta API.
-     */
+    if (!pageId) {
+        return {
+            status: 'invalid_url',
+
+            error:
+                'Cannot parse Facebook Page URL'
+        };
+    }
+
+    const fields = [
+        'id',
+        'name',
+        'followers_count',
+        'fan_count'
+    ].join(',');
+
+    const pageUrl =
+        'https://graph.facebook.com/v23.0/' +
+        encodeURIComponent(pageId) +
+        '?fields=' +
+        encodeURIComponent(fields) +
+        '&access_token=' +
+        encodeURIComponent(accessToken);
+
+    const pageRes =
+        await apiGet(pageUrl);
+
     if (
-        accessToken &&
-        pageId
+        pageRes.status !== 200
     ) {
-        const fields = [
-            'id',
-            'name',
-            'followers_count',
-            'fan_count'
-        ].join(',');
+        return {
+            status: 'api_error',
 
-        const endpoint =
-            `https://graph.facebook.com/v23.0/` +
-            `${encodeURIComponent(pageId)}` +
-            `?fields=${encodeURIComponent(fields)}` +
-            `&access_token=${encodeURIComponent(accessToken)}`;
+            error:
+                jsonErrorMessage(
+                    pageRes.body,
+                    `Facebook Graph API returned HTTP ${pageRes.status}`
+                )
+        };
+    }
 
-        const response =
-            await apiGet(
-                endpoint
-            );
+    const page =
+        pageRes.body || {};
 
-        if (
-            response.status === 200 &&
-            response.body
+    const followers =
+        toNumber(
+            page.followers_count ||
+            page.fan_count
+        );
+
+    const postsFields =
+        'id,message,created_time,likes.limit(0).summary(true),comments.limit(0).summary(true)';
+
+    const postsUrl =
+        'https://graph.facebook.com/v23.0/' +
+        encodeURIComponent(
+            page.id || pageId
+        ) +
+        '/posts?fields=' +
+        encodeURIComponent(postsFields) +
+        '&limit=25&access_token=' +
+        encodeURIComponent(accessToken);
+
+    const postsRes =
+        await apiGet(postsUrl);
+
+    let posts = 0;
+    let likes = 0;
+    let comments = 0;
+
+    if (
+        postsRes.status === 200
+    ) {
+        const data =
+            postsRes.body?.data || [];
+
+        posts =
+            data.length;
+
+        for (
+            const post of data
         ) {
-            const page =
-                response.body;
-
-            const followers =
+            likes +=
                 toNumber(
-                    page.followers_count ||
-                    page.fan_count
+                    post.likes
+                        ?.summary
+                        ?.total_count
                 );
 
-            let likes = 0;
-            let comments = 0;
-            let posts = 0;
-
-            const postsEndpoint =
-                `https://graph.facebook.com/v23.0/` +
-                `${encodeURIComponent(page.id || pageId)}` +
-                `/posts?fields=${encodeURIComponent(
-                    'id,likes.limit(0).summary(true),comments.limit(0).summary(true)'
-                )}` +
-                `&limit=25` +
-                `&access_token=${encodeURIComponent(accessToken)}`;
-
-            const postsResponse =
-                await apiGet(
-                    postsEndpoint
+            comments +=
+                toNumber(
+                    post.comments
+                        ?.summary
+                        ?.total_count
                 );
-
-            if (
-                postsResponse.status === 200
-            ) {
-                const items =
-                    postsResponse.body?.data ||
-                    [];
-
-                posts =
-                    items.length;
-
-                for (
-                    const post
-                    of items
-                ) {
-                    likes +=
-                        toNumber(
-                            post.likes
-                                ?.summary
-                                ?.total_count
-                        );
-
-                    comments +=
-                        toNumber(
-                            post.comments
-                                ?.summary
-                                ?.total_count
-                        );
-                }
-            }
-
-            const interactions =
-                likes + comments;
-
-            return {
-                status: 'ok',
-                source: 'meta_api',
-
-                name:
-                    page.name ||
-                    'Facebook Page',
-
-                followers,
-                views: 0,
-                likes,
-                posts,
-
-                engagement:
-                    followers > 0 &&
-                    posts > 0
-                        ? round(
-                            (
-                                interactions /
-                                posts /
-                                followers
-                            ) * 100,
-                            2
-                        )
-                        : 0
-            };
         }
     }
 
-    /*
-     * Public URL fallback.
-     */
-    const page =
-        await fetchPublicPage(
-            profileUrl
-        );
+    const interactions =
+        likes +
+        comments;
 
-    if (!page.ok) {
-        return {
-            status: 'unavailable',
-            source: 'public_url',
-            error:
-                page.error ||
-                'Could not retrieve Facebook URL'
-        };
-    }
-
-    const metrics =
-        extractPublicMetrics(
-            page.html,
-            'facebook'
-        );
-
-    if (
-        !metrics.followers &&
-        !metrics.likes &&
-        !metrics.posts
-    ) {
-        return {
-            status: 'partial',
-            source: 'public_url',
-
-            name:
-                metrics.name ||
-                'Facebook Page',
-
-            followers: 0,
-            views: 0,
-            likes: 0,
-            posts: 0,
-            engagement: 0,
-
-            error:
-                'Facebook loaded the public URL, but reliable page statistics were not publicly exposed. Add FB_TOKEN for reliable page statistics.'
-        };
-    }
+    const engagement =
+        posts > 0 &&
+        followers > 0
+            ? round(
+                (
+                    interactions /
+                    posts /
+                    followers
+                ) * 100,
+                2
+            )
+            : 0;
 
     return {
         status: 'ok',
-        source: 'public_url',
 
         name:
-            metrics.name ||
+            page.name ||
             'Facebook Page',
 
-        followers:
-            metrics.followers,
+        followers,
 
-        views:
-            metrics.views,
+        views: 0,
 
-        likes:
-            metrics.likes,
+        likes,
 
-        posts:
-            metrics.posts,
+        posts,
 
-        engagement:
-            metrics.followers > 0 &&
-            metrics.posts > 0
-                ? round(
-                    (
-                        metrics.likes /
-                        metrics.posts /
-                        metrics.followers
-                    ) * 100,
-                    2
-                )
-                : 0
+        engagement
     };
 }
 
@@ -2178,6 +1573,18 @@ async function fetchInstagram(
     profileUrl,
     accessToken
 ) {
+    if (!accessToken) {
+        return {
+            status: 'no_credentials',
+
+            error:
+                'Instagram / Meta Access Token not set',
+
+            setup:
+                'Use a valid Meta/Facebook access token with access to the connected Instagram professional account.'
+        };
+    }
+
     const username =
         parseInstagramUsername(
             profileUrl
@@ -2186,271 +1593,213 @@ async function fetchInstagram(
     if (!username) {
         return {
             status: 'invalid_url',
+
             error:
                 'Cannot parse Instagram profile URL'
         };
     }
 
-    /*
-     * If a Meta token is available, try the connected professional account.
-     */
-    if (accessToken) {
-        const pagesEndpoint =
-            `https://graph.facebook.com/v23.0/me/accounts` +
-            `?fields=id,name,access_token` +
-            `&limit=100` +
-            `&access_token=${encodeURIComponent(accessToken)}`;
+    const pagesUrl =
+        'https://graph.facebook.com/v23.0/me/accounts' +
+        '?fields=id,name,access_token' +
+        '&limit=100' +
+        '&access_token=' +
+        encodeURIComponent(accessToken);
 
-        const pagesResponse =
-            await apiGet(
-                pagesEndpoint
-            );
+    const pagesRes =
+        await apiGet(pagesUrl);
 
-        if (
-            pagesResponse.status === 200
-        ) {
-            const pages =
-                pagesResponse.body?.data ||
-                [];
-
-            for (
-                const page
-                of pages
-            ) {
-                const pageToken =
-                    page.access_token ||
-                    accessToken;
-
-                const relationshipEndpoint =
-                    `https://graph.facebook.com/v23.0/` +
-                    `${encodeURIComponent(page.id)}` +
-                    `?fields=instagram_business_account` +
-                    `&access_token=${encodeURIComponent(pageToken)}`;
-
-                const relationshipResponse =
-                    await apiGet(
-                        relationshipEndpoint
-                    );
-
-                if (
-                    relationshipResponse.status !== 200
-                ) {
-                    continue;
-                }
-
-                const igId =
-                    relationshipResponse.body
-                        ?.instagram_business_account
-                        ?.id;
-
-                if (!igId) {
-                    continue;
-                }
-
-                const fields = [
-                    'id',
-                    'username',
-                    'name',
-                    'followers_count',
-                    'media_count'
-                ].join(',');
-
-                const accountEndpoint =
-                    `https://graph.facebook.com/v23.0/` +
-                    `${encodeURIComponent(igId)}` +
-                    `?fields=${encodeURIComponent(fields)}` +
-                    `&access_token=${encodeURIComponent(pageToken)}`;
-
-                const accountResponse =
-                    await apiGet(
-                        accountEndpoint
-                    );
-
-                if (
-                    accountResponse.status !== 200
-                ) {
-                    continue;
-                }
-
-                const account =
-                    accountResponse.body || {};
-
-                if (
-                    account.username &&
-                    account.username.toLowerCase() !==
-                    username.toLowerCase()
-                ) {
-                    continue;
-                }
-
-                const followers =
-                    toNumber(
-                        account.followers_count
-                    );
-
-                const posts =
-                    toNumber(
-                        account.media_count
-                    );
-
-                let likes = 0;
-                let comments = 0;
-                let mediaCount = 0;
-
-                const mediaEndpoint =
-                    `https://graph.facebook.com/v23.0/` +
-                    `${encodeURIComponent(igId)}` +
-                    `/media?fields=${encodeURIComponent(
-                        'id,like_count,comments_count'
-                    )}` +
-                    `&limit=25` +
-                    `&access_token=${encodeURIComponent(pageToken)}`;
-
-                const mediaResponse =
-                    await apiGet(
-                        mediaEndpoint
-                    );
-
-                if (
-                    mediaResponse.status === 200
-                ) {
-                    const media =
-                        mediaResponse.body?.data ||
-                        [];
-
-                    mediaCount =
-                        media.length;
-
-                    for (
-                        const item
-                        of media
-                    ) {
-                        likes +=
-                            toNumber(
-                                item.like_count
-                            );
-
-                        comments +=
-                            toNumber(
-                                item.comments_count
-                            );
-                    }
-                }
-
-                const interactions =
-                    likes + comments;
-
-                return {
-                    status: 'ok',
-                    source: 'instagram_meta_api',
-
-                    name:
-                        account.name ||
-                        account.username ||
-                        username,
-
-                    followers,
-                    views: 0,
-                    likes,
-                    posts,
-
-                    engagement:
-                        followers > 0 &&
-                        mediaCount > 0
-                            ? round(
-                                (
-                                    interactions /
-                                    mediaCount /
-                                    followers
-                                ) * 100,
-                                2
-                            )
-                            : 0
-                };
-            }
-        }
-    }
-
-    /*
-     * Public Instagram URL fallback.
-     */
-    const page =
-        await fetchPublicPage(
-            profileUrl
-        );
-
-    if (!page.ok) {
+    if (
+        pagesRes.status !== 200
+    ) {
         return {
-            status: 'unavailable',
-            source: 'public_url',
+            status: 'api_error',
+
             error:
-                page.error ||
-                'Could not retrieve Instagram profile'
+                jsonErrorMessage(
+                    pagesRes.body,
+                    `Meta API returned HTTP ${pagesRes.status}`
+                )
         };
     }
 
-    const metrics =
-        extractPublicMetrics(
-            page.html,
-            'instagram'
-        );
+    const pages =
+        pagesRes.body?.data || [];
 
-    if (
-        !metrics.followers &&
-        !metrics.likes &&
-        !metrics.posts
-    ) {
+    if (!pages.length) {
         return {
-            status: 'partial',
-            source: 'public_url',
-
-            name:
-                metrics.name ||
-                `@${username}`,
-
-            followers: 0,
-            views: 0,
-            likes: 0,
-            posts: 0,
-            engagement: 0,
+            status: 'api_error',
 
             error:
-                'Instagram loaded the profile URL, but statistics were not publicly exposed to the server. Add an Instagram/Meta access token for professional-account statistics.'
+                'No Facebook Pages are available to this access token.'
+        };
+    }
+
+    for (
+        const page of pages
+    ) {
+        const pageToken =
+            page.access_token ||
+            accessToken;
+
+        const relationshipUrl =
+            'https://graph.facebook.com/v23.0/' +
+            encodeURIComponent(page.id) +
+            '?fields=instagram_business_account' +
+            '&access_token=' +
+            encodeURIComponent(pageToken);
+
+        const relationshipRes =
+            await apiGet(
+                relationshipUrl
+            );
+
+        if (
+            relationshipRes.status !== 200
+        ) {
+            continue;
+        }
+
+        const igId =
+            relationshipRes.body
+                ?.instagram_business_account
+                ?.id;
+
+        if (!igId) {
+            continue;
+        }
+
+        const statsFields = [
+            'id',
+            'username',
+            'name',
+            'followers_count',
+            'media_count'
+        ].join(',');
+
+        const statsUrl =
+            'https://graph.facebook.com/v23.0/' +
+            encodeURIComponent(igId) +
+            '?fields=' +
+            encodeURIComponent(statsFields) +
+            '&access_token=' +
+            encodeURIComponent(pageToken);
+
+        const statsRes =
+            await apiGet(statsUrl);
+
+        if (
+            statsRes.status !== 200
+        ) {
+            continue;
+        }
+
+        const stats =
+            statsRes.body || {};
+
+        if (
+            stats.username &&
+            username &&
+            stats.username.toLowerCase() !==
+            username.toLowerCase()
+        ) {
+            continue;
+        }
+
+        const followers =
+            toNumber(
+                stats.followers_count
+            );
+
+        const mediaCount =
+            toNumber(
+                stats.media_count
+            );
+
+        let likes = 0;
+        let comments = 0;
+        let mediaReturned = 0;
+
+        const mediaFields =
+            'id,like_count,comments_count,timestamp';
+
+        const mediaUrl =
+            'https://graph.facebook.com/v23.0/' +
+            encodeURIComponent(igId) +
+            '/media?fields=' +
+            encodeURIComponent(mediaFields) +
+            '&limit=25&access_token=' +
+            encodeURIComponent(pageToken);
+
+        const mediaRes =
+            await apiGet(mediaUrl);
+
+        if (
+            mediaRes.status === 200
+        ) {
+            const media =
+                mediaRes.body?.data || [];
+
+            mediaReturned =
+                media.length;
+
+            for (
+                const item of media
+            ) {
+                likes +=
+                    toNumber(
+                        item.like_count
+                    );
+
+                comments +=
+                    toNumber(
+                        item.comments_count
+                    );
+            }
+        }
+
+        const interactions =
+            likes +
+            comments;
+
+        const engagement =
+            mediaReturned > 0 &&
+            followers > 0
+                ? round(
+                    (
+                        interactions /
+                        mediaReturned /
+                        followers
+                    ) * 100,
+                    2
+                )
+                : 0;
+
+        return {
+            status: 'ok',
+
+            name:
+                stats.name ||
+                stats.username ||
+                'Instagram',
+
+            followers,
+
+            views: 0,
+
+            likes,
+
+            posts: mediaCount,
+
+            engagement
         };
     }
 
     return {
-        status: 'ok',
-        source: 'public_url',
+        status: 'api_error',
 
-        name:
-            metrics.name ||
-            `@${username}`,
-
-        followers:
-            metrics.followers,
-
-        views:
-            metrics.views,
-
-        likes:
-            metrics.likes,
-
-        posts:
-            metrics.posts,
-
-        engagement:
-            metrics.followers > 0 &&
-            metrics.posts > 0
-                ? round(
-                    (
-                        metrics.likes /
-                        metrics.posts /
-                        metrics.followers
-                    ) * 100,
-                    2
-                )
-                : 0
+        error:
+            `Could not find Instagram professional account @${username} connected to a Facebook Page accessible by this token.`
     };
 }
 
@@ -2462,257 +1811,206 @@ async function fetchLinkedIn(
     profileUrl,
     accessToken
 ) {
-    const vanity =
+    if (!accessToken) {
+        return {
+            status: 'no_credentials',
+
+            error:
+                'LinkedIn Access Token not set',
+
+            setup:
+                'Add an OAuth access token with the required LinkedIn organization permissions.'
+        };
+    }
+
+    const orgVanity =
         parseLinkedInOrg(
             profileUrl
         );
 
-    if (!vanity) {
+    if (!orgVanity) {
         return {
             status: 'invalid_url',
+
             error:
-                'Expected LinkedIn company URL such as https://www.linkedin.com/company/company-name/'
+                'Cannot parse LinkedIn company URL.'
         };
     }
 
-    if (accessToken) {
-        const headers = {
-            Authorization:
-                `Bearer ${accessToken}`,
+    const headers = {
+        Authorization:
+            `Bearer ${accessToken}`,
 
-            'LinkedIn-Version':
-                LINKEDIN_VERSION,
+        'LinkedIn-Version':
+            LINKEDIN_VERSION,
 
-            'X-Restli-Protocol-Version':
-                '2.0.0',
+        'X-Restli-Protocol-Version':
+            '2.0.0',
 
-            Accept:
-                'application/json'
-        };
+        Accept:
+            'application/json'
+    };
 
-        const endpoint =
-            `https://api.linkedin.com/rest/organizations` +
-            `?q=vanityName` +
-            `&vanityName=${encodeURIComponent(vanity)}`;
+    const orgUrl =
+        'https://api.linkedin.com/rest/organizations' +
+        '?q=vanityName' +
+        '&vanityName=' +
+        encodeURIComponent(orgVanity);
 
-        const response =
-            await apiGet(
-                endpoint,
-                headers
-            );
-
-        if (
-            response.status === 200
-        ) {
-            const organization =
-                response.body
-                    ?.elements?.[0];
-
-            if (organization) {
-                const orgId =
-                    organization.id;
-
-                let followers = 0;
-
-                /*
-                 * Attempt follower information.
-                 */
-                const followerEndpoint =
-                    `https://api.linkedin.com/v2/networkSizes/` +
-                    `urn%3Ali%3Aorganization%3A${encodeURIComponent(orgId)}` +
-                    `?edgeType=CompanyFollowedByMember`;
-
-                const followerResponse =
-                    await apiGet(
-                        followerEndpoint,
-                        headers
-                    );
-
-                if (
-                    followerResponse.status === 200
-                ) {
-                    followers =
-                        toNumber(
-                            followerResponse.body
-                                ?.firstDegreeSize
-                        );
-                }
-
-                let views = 0;
-                let likes = 0;
-                let posts = 0;
-                let comments = 0;
-                let shares = 0;
-
-                const organizationUrn =
-                    `urn:li:organization:${orgId}`;
-
-                const statsEndpoint =
-                    `https://api.linkedin.com/rest/organizationalEntityShareStatistics` +
-                    `?q=organizationalEntity` +
-                    `&organizationalEntity=${encodeURIComponent(
-                        organizationUrn
-                    )}`;
-
-                const statsResponse =
-                    await apiGet(
-                        statsEndpoint,
-                        headers
-                    );
-
-                if (
-                    statsResponse.status === 200
-                ) {
-                    const elements =
-                        statsResponse.body
-                            ?.elements || [];
-
-                    posts =
-                        elements.length;
-
-                    for (
-                        const element
-                        of elements
-                    ) {
-                        const stats =
-                            element.totalShareStatistics ||
-                            {};
-
-                        views +=
-                            toNumber(
-                                stats.impressionCount
-                            );
-
-                        likes +=
-                            toNumber(
-                                stats.likeCount
-                            );
-
-                        comments +=
-                            toNumber(
-                                stats.commentCount
-                            );
-
-                        shares +=
-                            toNumber(
-                                stats.shareCount
-                            );
-                    }
-                }
-
-                const interactions =
-                    likes +
-                    comments +
-                    shares;
-
-                return {
-                    status: 'ok',
-                    source: 'linkedin_api',
-
-                    name:
-                        organization.localizedName ||
-                        organization.vanityName ||
-                        vanity,
-
-                    followers,
-                    views,
-                    likes,
-                    posts,
-
-                    engagement:
-                        views > 0
-                            ? round(
-                                (
-                                    interactions /
-                                    views
-                                ) * 100,
-                                2
-                            )
-                            : 0
-                };
-            }
-        }
-    }
-
-    /*
-     * Public URL fallback.
-     */
-    const page =
-        await fetchPublicPage(
-            profileUrl
-        );
-
-    if (!page.ok) {
-        return {
-            status: 'unavailable',
-            source: 'public_url',
-            error:
-                page.error ||
-                'Could not retrieve LinkedIn company URL'
-        };
-    }
-
-    const metrics =
-        extractPublicMetrics(
-            page.html,
-            'linkedin'
+    const orgRes =
+        await apiGet(
+            orgUrl,
+            headers
         );
 
     if (
-        !metrics.followers &&
-        !metrics.likes &&
-        !metrics.views &&
-        !metrics.posts
+        orgRes.status !== 200
     ) {
         return {
-            status: 'partial',
-            source: 'public_url',
-
-            name:
-                metrics.name ||
-                vanity,
-
-            followers: 0,
-            views: 0,
-            likes: 0,
-            posts: 0,
-            engagement: 0,
+            status: 'api_error',
 
             error:
-                'LinkedIn loaded the company URL, but company statistics were not publicly exposed. Add LINKEDIN_TOKEN for API statistics.'
+                jsonErrorMessage(
+                    orgRes.body,
+                    `LinkedIn organization lookup returned HTTP ${orgRes.status}`
+                )
         };
     }
 
+    const org =
+        orgRes.body?.elements?.[0];
+
+    const orgId =
+        org?.id;
+
+    if (!orgId) {
+        return {
+            status: 'not_found',
+
+            error:
+                'LinkedIn organisation not found'
+        };
+    }
+
+    let followers = 0;
+
+    const followerUrl =
+        'https://api.linkedin.com/v2/networkSizes/' +
+        'urn%3Ali%3Aorganization%3A' +
+        encodeURIComponent(orgId) +
+        '?edgeType=CompanyFollowedByMember';
+
+    const followerRes =
+        await apiGet(
+            followerUrl,
+            headers
+        );
+
+    if (
+        followerRes.status === 200
+    ) {
+        followers =
+            toNumber(
+                followerRes.body
+                    ?.firstDegreeSize
+            );
+    }
+
+    const organizationUrn =
+        `urn:li:organization:${orgId}`;
+
+    const statsUrl =
+        'https://api.linkedin.com/rest/organizationalEntityShareStatistics' +
+        '?q=organizationalEntity' +
+        '&organizationalEntity=' +
+        encodeURIComponent(
+            organizationUrn
+        );
+
+    const statsRes =
+        await apiGet(
+            statsUrl,
+            headers
+        );
+
+    let views = 0;
+    let likes = 0;
+    let comments = 0;
+    let shares = 0;
+    let posts = 0;
+
+    if (
+        statsRes.status === 200
+    ) {
+        const elements =
+            statsRes.body?.elements || [];
+
+        posts =
+            elements.length;
+
+        for (
+            const element of elements
+        ) {
+            const stats =
+                element
+                    .totalShareStatistics ||
+                {};
+
+            views +=
+                toNumber(
+                    stats.impressionCount
+                );
+
+            likes +=
+                toNumber(
+                    stats.likeCount
+                );
+
+            comments +=
+                toNumber(
+                    stats.commentCount
+                );
+
+            shares +=
+                toNumber(
+                    stats.shareCount
+                );
+        }
+    }
+
+    const interactions =
+        likes +
+        comments +
+        shares;
+
+    const engagement =
+        views > 0
+            ? round(
+                (
+                    interactions /
+                    views
+                ) * 100,
+                2
+            )
+            : 0;
+
     return {
         status: 'ok',
-        source: 'public_url',
 
         name:
-            metrics.name ||
-            vanity,
+            org?.localizedName ||
+            org?.vanityName ||
+            orgVanity,
 
-        followers:
-            metrics.followers,
+        followers,
 
-        views:
-            metrics.views,
+        views,
 
-        likes:
-            metrics.likes,
+        likes,
 
-        posts:
-            metrics.posts,
+        posts,
 
-        engagement:
-            metrics.views > 0
-                ? round(
-                    (
-                        metrics.likes /
-                        metrics.views
-                    ) * 100,
-                    2
-                )
-                : 0
+        engagement
     };
 }
 
@@ -2724,6 +2022,18 @@ async function fetchTikTok(
     profileUrl,
     accessToken
 ) {
+    if (!accessToken) {
+        return {
+            status: 'no_credentials',
+
+            error:
+                'TikTok user access token not set',
+
+            setup:
+                'Authorize the TikTok account through your TikTok developer app and provide the resulting user access token.'
+        };
+    }
+
     const username =
         parseTikTokUsername(
             profileUrl
@@ -2732,163 +2042,135 @@ async function fetchTikTok(
     if (!username) {
         return {
             status: 'invalid_url',
+
             error:
-                'Expected TikTok URL such as https://www.tiktok.com/@username'
+                'Cannot parse TikTok URL.'
         };
     }
 
-    /*
-     * Official TikTok API.
-     */
-    if (accessToken) {
-        const fields = [
-            'open_id',
-            'display_name',
-            'username',
-            'follower_count',
-            'following_count',
-            'likes_count',
-            'video_count'
-        ].join(',');
+    const fields = [
+        'open_id',
+        'display_name',
+        'username',
+        'follower_count',
+        'following_count',
+        'likes_count',
+        'video_count'
+    ].join(',');
 
-        const endpoint =
-            `https://open.tiktokapis.com/v2/user/info/` +
-            `?fields=${encodeURIComponent(fields)}`;
+    const endpoint =
+        'https://open.tiktokapis.com/v2/user/info/' +
+        '?fields=' +
+        encodeURIComponent(fields);
 
-        const response =
-            await apiGet(
-                endpoint,
-                {
-                    Authorization:
-                        `Bearer ${accessToken}`
-                }
-            );
-
-        if (
-            response.status === 200 &&
-            response.body?.data?.user
-        ) {
-            const user =
-                response.body.data.user;
-
-            const followers =
-                toNumber(
-                    user.follower_count
-                );
-
-            const likes =
-                toNumber(
-                    user.likes_count
-                );
-
-            const posts =
-                toNumber(
-                    user.video_count
-                );
-
-            return {
-                status: 'ok',
-                source: 'tiktok_api',
-
-                name:
-                    user.display_name ||
-                    user.username ||
-                    username,
-
-                followers,
-                views: 0,
-                likes,
-                posts,
-
-                engagement:
-                    followers > 0
-                        ? round(
-                            (
-                                likes /
-                                followers
-                            ) * 100,
-                            2
-                        )
-                        : 0
-            };
-        }
-    }
-
-    /*
-     * Public URL fallback.
-     */
-    const page =
-        await fetchPublicPage(
-            profileUrl
-        );
-
-    if (!page.ok) {
-        return {
-            status: 'unavailable',
-            source: 'public_url',
-            error:
-                page.error ||
-                'Could not retrieve TikTok profile'
-        };
-    }
-
-    const metrics =
-        extractPublicMetrics(
-            page.html,
-            'tiktok'
+    const res =
+        await apiGet(
+            endpoint,
+            {
+                Authorization:
+                    `Bearer ${accessToken}`
+            }
         );
 
     if (
-        !metrics.followers &&
-        !metrics.likes &&
-        !metrics.posts &&
-        !metrics.views
+        res.status === 401
     ) {
         return {
-            status: 'partial',
-            source: 'public_url',
-
-            name:
-                metrics.name ||
-                `@${username}`,
-
-            followers: 0,
-            views: 0,
-            likes: 0,
-            posts: 0,
-            engagement: 0,
+            status: 'api_error',
 
             error:
-                'TikTok loaded the profile URL, but statistics were not publicly exposed to the server. Add TIKTOK_TOKEN for API statistics.'
+                'TikTok access token is invalid or expired'
         };
     }
 
+    if (
+        res.status === 403
+    ) {
+        return {
+            status: 'api_error',
+
+            error:
+                'TikTok denied access. Check the required user.info scopes.'
+        };
+    }
+
+    if (
+        res.status !== 200
+    ) {
+        return {
+            status: 'api_error',
+
+            error:
+                jsonErrorMessage(
+                    res.body,
+                    `TikTok API returned HTTP ${res.status}`
+                )
+        };
+    }
+
+    const user =
+        res.body?.data?.user;
+
+    if (!user) {
+        return {
+            status: 'api_error',
+
+            error:
+                'TikTok returned no user data.'
+        };
+    }
+
+    if (
+        user.username &&
+        username &&
+        user.username.toLowerCase() !==
+        username.toLowerCase()
+    ) {
+        return {
+            status: 'api_error',
+
+            error:
+                `The TikTok token belongs to @${user.username}, but the supplied profile URL is @${username}.`
+        };
+    }
+
+    const followers =
+        toNumber(
+            user.follower_count
+        );
+
+    const likes =
+        toNumber(
+            user.likes_count
+        );
+
+    const posts =
+        toNumber(
+            user.video_count
+        );
+
     return {
         status: 'ok',
-        source: 'public_url',
 
         name:
-            metrics.name ||
-            `@${username}`,
+            user.display_name ||
+            user.username ||
+            username,
 
-        followers:
-            metrics.followers,
+        followers,
 
-        views:
-            metrics.views,
+        views: 0,
 
-        likes:
-            metrics.likes,
+        likes,
 
-        posts:
-            metrics.posts,
+        posts,
 
         engagement:
-            metrics.followers > 0
+            followers > 0
                 ? round(
                     (
-                        metrics.likes /
-                        metrics.followers
+                        likes /
+                        followers
                     ) * 100,
                     2
                 )
@@ -2974,12 +2256,11 @@ function validateProfileUrl(
         ALLOWED_HOSTS[platform] || [];
 
     const valid =
-        allowed.some(
-            domain =>
-                hostname === domain ||
-                hostname.endsWith(
-                    `.${domain}`
-                )
+        allowed.some(domain =>
+            hostname === domain ||
+            hostname.endsWith(
+                `.${domain}`
+            )
         );
 
     if (!valid) {
@@ -3008,149 +2289,11 @@ app.get(
             version:
                 '3.0.0',
 
-            analytics:
-                'URL retrieval + official API fallback',
-
             timestamp:
                 new Date().toISOString()
         });
     }
 );
-
-/* ============================================================================
-   AUTHENTICATION
-============================================================================ */
-
-function getSessionCookie(req) {
-    const cookieHeader =
-        req.headers.cookie || '';
-
-    const cookie =
-        cookieHeader
-            .split(';')
-            .map(
-                part =>
-                    part.trim()
-            )
-            .find(
-                part =>
-                    part.startsWith(
-                        'kiwami_session='
-                    )
-            );
-
-    if (!cookie) {
-        return '';
-    }
-
-    return cookie
-        .substring(
-            'kiwami_session='.length
-        )
-        .trim();
-}
-
-function createSessionCookie(
-    token
-) {
-    const attributes = [
-        'Path=/',
-        'HttpOnly',
-        'SameSite=Lax',
-        `Max-Age=${Math.floor(
-            SESSION_TTL_MS / 1000
-        )}`
-    ];
-
-    if (
-        process.env.NODE_ENV ===
-        'production'
-    ) {
-        attributes.push(
-            'Secure'
-        );
-    }
-
-    return (
-        `kiwami_session=${token}; ` +
-        attributes.join('; ')
-    );
-}
-
-function clearSessionCookie(
-    res
-) {
-    const attributes = [
-        'Path=/',
-        'HttpOnly',
-        'SameSite=Lax',
-        'Max-Age=0'
-    ];
-
-    if (
-        process.env.NODE_ENV ===
-        'production'
-    ) {
-        attributes.push(
-            'Secure'
-        );
-    }
-
-    res.setHeader(
-        'Set-Cookie',
-        `kiwami_session=; ${attributes.join('; ')}`
-    );
-}
-
-function requireAuthentication(
-    req,
-    res,
-    next
-) {
-    const token =
-        getSessionCookie(req);
-
-    if (!token) {
-        return res
-            .status(401)
-            .json({
-                error:
-                    'Authentication required'
-            });
-    }
-
-    const session =
-        sessions.get(token);
-
-    if (!session) {
-        return res
-            .status(401)
-            .json({
-                error:
-                    'Session expired or invalid'
-            });
-    }
-
-    if (
-        session.expiresAt <
-        Date.now()
-    ) {
-        sessions.delete(token);
-
-        return res
-            .status(401)
-            .json({
-                error:
-                    'Session expired or invalid'
-            });
-    }
-
-    session.expiresAt =
-        Date.now() +
-        SESSION_TTL_MS;
-
-    next();
-}
 
 /* ============================================================================
    LOGIN
@@ -3176,7 +2319,7 @@ app.post(
             const now =
                 Date.now();
 
-            const attempt =
+            const currentAttempt =
                 loginAttempts.get(
                     clientIp
                 ) || {
@@ -3185,30 +2328,30 @@ app.post(
                 };
 
             if (
-                attempt.resetAt <
+                currentAttempt.resetAt <
                 now -
                 LOGIN_ATTEMPT_WINDOW_MS
             ) {
-                attempt.count = 0;
-                attempt.resetAt = now;
+                currentAttempt.count = 0;
+                currentAttempt.resetAt = now;
             }
 
             if (
-                attempt.count >=
+                currentAttempt.count >=
                 LOGIN_ATTEMPT_LIMIT
             ) {
                 return res
                     .status(429)
                     .json({
                         error:
-                            'Too many login attempts. Please try again later.'
+                            'Too many login attempts. Please try again in a few minutes.'
                     });
             }
 
             const emailMatches =
                 email === AUTH_EMAIL ||
                 email ===
-                    'kiwamitech.co.ke';
+                'kiwamitech.co.ke';
 
             const passwordMatches =
                 timingSafeEquals(
@@ -3220,11 +2363,11 @@ app.post(
                 !emailMatches ||
                 !passwordMatches
             ) {
-                attempt.count += 1;
+                currentAttempt.count += 1;
 
                 loginAttempts.set(
                     clientIp,
-                    attempt
+                    currentAttempt
                 );
 
                 return res
@@ -3248,6 +2391,7 @@ app.post(
                 token,
                 {
                     createdAt: now,
+
                     expiresAt:
                         now +
                         SESSION_TTL_MS
@@ -3268,13 +2412,15 @@ app.post(
 
             return res.json({
                 success: true,
+
                 message:
                     'Login successful'
             });
 
         } catch (err) {
+
             console.error(
-                'Login error:',
+                'Login handler error:',
                 err
             );
 
@@ -3307,8 +2453,9 @@ app.get(
             !token ||
             !session ||
             session.expiresAt <
-                Date.now()
+            Date.now()
         ) {
+
             if (token) {
                 sessions.delete(
                     token
@@ -3366,6 +2513,7 @@ app.post(
 
         return res.json({
             success: true,
+
             message:
                 'Logged out'
         });
@@ -3380,7 +2528,9 @@ app.post(
     '/api/analytics',
     requireAuthentication,
     async (req, res) => {
+
         try {
+
             const body =
                 req.body || {};
 
@@ -3392,10 +2542,8 @@ app.post(
 
             if (
                 typeof profiles !==
-                    'object' ||
-                Array.isArray(
-                    profiles
-                )
+                'object' ||
+                Array.isArray(profiles)
             ) {
                 return res
                     .status(400)
@@ -3405,98 +2553,90 @@ app.post(
                     });
             }
 
-            /*
-             * Credentials can come from:
-             *
-             * 1. frontend request
-             * 2. server environment
-             *
-             * Environment variables are preferred.
-             */
             const keys = {
+
                 youtube:
                     safeToken(
-                        process.env.YOUTUBE_API_KEY ||
                         apiKeys.youtube ||
+                        process.env.YOUTUBE_API_KEY ||
                         ''
                     ),
 
                 twitter:
                     safeToken(
-                        process.env.TWITTER_BEARER ||
                         apiKeys.twitter ||
+                        process.env.TWITTER_BEARER ||
                         ''
                     ),
 
                 facebook:
                     safeToken(
-                        process.env.FB_TOKEN ||
                         apiKeys.facebook ||
+                        process.env.FB_TOKEN ||
                         ''
                     ),
 
                 instagram:
                     safeToken(
-                        process.env.IG_TOKEN ||
                         apiKeys.instagram ||
-                        process.env.FB_TOKEN ||
+                        process.env.IG_TOKEN ||
                         apiKeys.facebook ||
+                        process.env.FB_TOKEN ||
                         ''
                     ),
 
                 linkedin:
                     safeToken(
-                        process.env.LINKEDIN_TOKEN ||
                         apiKeys.linkedin ||
+                        process.env.LINKEDIN_TOKEN ||
                         ''
                     ),
 
                 tiktok:
                     safeToken(
-                        process.env.TIKTOK_TOKEN ||
                         apiKeys.tiktok ||
+                        process.env.TIKTOK_TOKEN ||
                         ''
                     )
             };
 
-            /*
-             * Validate every supplied URL.
-             */
-            for (
-                const platform
-                of PLATFORM_NAMES
-            ) {
-                const profileUrl =
-                    profiles[
-                        platform
-                    ];
+            /* ---------------------------------------------------------------
+               VALIDATE PROFILE URLS
+            ---------------------------------------------------------------- */
 
-                if (!profileUrl) {
+            for (
+                const platform of
+                PLATFORM_NAMES
+            ) {
+
+                const rawUrl =
+                    profiles[platform];
+
+                if (!rawUrl) {
                     continue;
                 }
 
-                const validationError =
+                const error =
                     validateProfileUrl(
                         platform,
-                        profileUrl
+                        rawUrl
                     );
 
-                if (
-                    validationError
-                ) {
+                if (error) {
                     return res
                         .status(400)
                         .json({
-                            error:
-                                validationError
+                            error
                         });
                 }
             }
 
-            /*
-             * Each platform works independently.
-             */
+            /* ---------------------------------------------------------------
+               FETCH ALL PLATFORMS
+            ---------------------------------------------------------------- */
+
             const fetchers = {
+
                 youtube: () =>
                     profiles.youtube
                         ? fetchYouTube(
@@ -3568,30 +2708,21 @@ app.post(
                 await Promise.all(
                     PLATFORM_NAMES.map(
                         async platform => {
+
                             try {
-                                console.log(
-                                    `[Analytics] Fetching ${platform}: ${profiles[platform] || 'no URL'}`
-                                );
-
-                                const result =
-                                    await fetchers[
-                                        platform
-                                    ]();
-
-                                console.log(
-                                    `[Analytics] ${platform}: ${result.status}`
-                                );
 
                                 return [
                                     platform,
-                                    result
+
+                                    await fetchers[
+                                        platform
+                                    ]()
                                 ];
 
-                            } catch (
-                                err
-                            ) {
+                            } catch (err) {
+
                                 console.error(
-                                    `[Analytics] ${platform} error:`,
+                                    `${platform} analytics error:`,
                                     err
                                 );
 
@@ -3616,13 +2747,11 @@ app.post(
                     results
                 );
 
-            /*
-             * Make sure all six platforms exist.
-             */
             for (
-                const platform
-                of PLATFORM_NAMES
+                const platform of
+                PLATFORM_NAMES
             ) {
+
                 if (
                     !platformResults[
                         platform
@@ -3638,7 +2767,7 @@ app.post(
             }
 
             /* ---------------------------------------------------------------
-               AGGREGATE RESULTS
+               TOTALS
             ---------------------------------------------------------------- */
 
             let totalFollowers = 0;
@@ -3650,20 +2779,18 @@ app.post(
             let engagementCount = 0;
 
             for (
-                const platform
-                of PLATFORM_NAMES
+                const platform of
+                PLATFORM_NAMES
             ) {
+
                 const data =
                     platformResults[
                         platform
                     ];
 
                 if (
-                    !data ||
-                    (
-                        data.status !==
-                        'ok'
-                    )
+                    data?.status !==
+                    'ok'
                 ) {
                     continue;
                 }
@@ -3688,18 +2815,20 @@ app.post(
                         data.posts
                     );
 
-                const engagement =
-                    toNumber(
-                        data.engagement
-                    );
-
                 if (
-                    engagement > 0
+                    Number.isFinite(
+                        Number(
+                            data.engagement
+                        )
+                    )
                 ) {
-                    engagementSum +=
-                        engagement;
 
-                    engagementCount++;
+                    engagementSum +=
+                        toNumber(
+                            data.engagement
+                        );
+
+                    engagementCount += 1;
                 }
             }
 
@@ -3713,18 +2842,24 @@ app.post(
                     : 0;
 
             return res.json({
+
                 platforms:
                     platformResults,
 
-                totalFollowers,
+                totalFollowers:
+                    totalFollowers,
 
-                totalViews,
+                totalViews:
+                    totalViews,
 
-                totalLikes,
+                totalLikes:
+                    totalLikes,
 
-                totalPosts,
+                totalPosts:
+                    totalPosts,
 
-                engagementRate,
+                engagementRate:
+                    engagementRate,
 
                 fetchedAt:
                     new Date()
@@ -3732,6 +2867,7 @@ app.post(
             });
 
         } catch (err) {
+
             console.error(
                 'Analytics route error:',
                 err
@@ -3740,6 +2876,7 @@ app.post(
             return res
                 .status(500)
                 .json({
+
                     error:
                         'Analytics service failed unexpectedly',
 
@@ -3761,84 +2898,105 @@ app.get(
     '/api/notifications',
     requireAuthentication,
     (req, res) => {
-        return res.json([
+
+        res.json([
+
             {
                 id: 1,
+
                 message:
                     'New comment on your Facebook post',
+
                 time:
                     new Date(
                         Date.now() -
                         15 * 60000
                     ).toISOString(),
+
                 platform:
                     'facebook'
             },
 
             {
                 id: 2,
+
                 message:
                     'Instagram post scheduled for today published',
+
                 time:
                     new Date(
                         Date.now() -
                         30 * 60000
                     ).toISOString(),
+
                 platform:
                     'instagram'
             },
 
             {
                 id: 3,
+
                 message:
                     'LinkedIn article reached 500 views',
+
                 time:
                     new Date(
                         Date.now() -
                         60 * 60000
                     ).toISOString(),
+
                 platform:
                     'linkedin'
             },
 
             {
                 id: 4,
+
                 message:
                     'YouTube video hit 1,000 views milestone',
+
                 time:
                     new Date(
                         Date.now() -
                         2 * 3600000
                     ).toISOString(),
+
                 platform:
                     'youtube'
             },
 
             {
                 id: 5,
+
                 message:
                     'Twitter/X post trending in your network',
+
                 time:
                     new Date(
                         Date.now() -
                         3 * 3600000
                     ).toISOString(),
+
                 platform:
                     'twitter'
             },
 
             {
                 id: 6,
+
                 message:
                     'TikTok video gained 500 new followers',
+
                 time:
                     new Date(
                         Date.now() -
                         4 * 3600000
                     ).toISOString(),
+
                 platform:
                     'tiktok'
             }
+
         ]);
     }
 );
@@ -3856,10 +3014,10 @@ app.post(
     '/api/post/:platform',
     requireAuthentication,
     (req, res) => {
+
         const platform =
             String(
-                req.params.platform ||
-                ''
+                req.params.platform || ''
             ).toLowerCase();
 
         if (
@@ -3877,14 +3035,12 @@ app.post(
 
         const title =
             safe(
-                req.body?.title ||
-                ''
+                req.body?.title || ''
             );
 
         const description =
             safe(
-                req.body?.description ||
-                '',
+                req.body?.description || '',
                 5000
             );
 
@@ -3905,10 +3061,14 @@ app.post(
         );
 
         return res.json({
+
             success: true,
+
             platform,
+
             message:
                 `Content queued for ${platform}`,
+
             timestamp:
                 new Date().toISOString()
         });
@@ -3923,7 +3083,9 @@ app.post(
     '/api/upload',
     requireAuthentication,
     (req, res) => {
+
         try {
+
             const {
                 fileName = 'file',
                 fileType = '',
@@ -3948,6 +3110,7 @@ app.post(
                 );
 
             if (matches) {
+
                 const mime =
                     matches[1];
 
@@ -3969,6 +3132,7 @@ app.post(
                 }
 
             } else {
+
                 buffer =
                     Buffer.from(
                         fileData,
@@ -4025,17 +3189,23 @@ app.post(
                 `/uploads/${uniqueName}`;
 
             console.log(
-                `[${new Date().toISOString()}] Upload saved: ${mediaUrl}`
+                `[${new Date().toISOString()}] Upload saved: ${mediaUrl} (${buffer.length} bytes)`
             );
 
             return res.json({
+
                 success: true,
-                url: mediaUrl,
+
+                url:
+                    mediaUrl,
+
                 fileName,
+
                 fileType
             });
 
         } catch (err) {
+
             console.error(
                 'Upload error:',
                 err
@@ -4057,7 +3227,8 @@ app.post(
 
 app.use(
     (req, res) => {
-        return res
+
+        res
             .status(404)
             .json({
                 error:
@@ -4067,11 +3238,12 @@ app.use(
 );
 
 /* ============================================================================
-   GLOBAL ERROR HANDLER
+   GLOBAL ERROR
 ============================================================================ */
 
 app.use(
     (err, req, res, next) => {
+
         console.error(
             'Unhandled server error:',
             err
@@ -4083,7 +3255,7 @@ app.use(
             return next(err);
         }
 
-        return res
+        res
             .status(500)
             .json({
                 error:
@@ -4098,6 +3270,7 @@ app.use(
 
 setInterval(
     () => {
+
         const now =
             Date.now();
 
@@ -4105,13 +3278,13 @@ setInterval(
             const [
                 token,
                 session
-            ]
-            of sessions.entries()
+            ] of sessions.entries()
         ) {
+
             if (
                 !session ||
                 session.expiresAt <
-                    now
+                now
             ) {
                 sessions.delete(
                     token
@@ -4123,9 +3296,9 @@ setInterval(
             const [
                 ip,
                 attempt
-            ]
-            of loginAttempts.entries()
+            ] of loginAttempts.entries()
         ) {
+
             if (
                 attempt.resetAt <
                 now -
@@ -4136,6 +3309,7 @@ setInterval(
                 );
             }
         }
+
     },
     5 * 60 * 1000
 ).unref();
@@ -4147,7 +3321,9 @@ setInterval(
 app.listen(
     PORT,
     () => {
+
         console.log('');
+
         console.log(
             '🚀 Kiwami Marketing System – API Server'
         );
@@ -4169,10 +3345,6 @@ app.listen(
         );
 
         console.log(
-            '   Analytics:   URL retrieval enabled'
-        );
-
-        console.log(
             '   Notifs:      GET  /api/notifications'
         );
 
@@ -4185,5 +3357,6 @@ app.listen(
         );
 
         console.log('');
+
     }
 );
