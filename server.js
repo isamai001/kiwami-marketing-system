@@ -889,7 +889,7 @@ function publicPageBaseData(
 }
 
 /* ============================================================================
-   SOCIAL PROFILE METADATA EXTRACTION  (HEAVILY IMPROVED)
+   SOCIAL PROFILE METADATA EXTRACTION  (GENERIC & FLEXIBLE)
 ============================================================================ */
 
 function extractSocialProfileMetrics(
@@ -913,17 +913,29 @@ function extractSocialProfileMetrics(
     const jsonLd =
         base.jsonLd || [];
 
+    // More generic keys for each metric
+    const followerKeys = [
+        'followers', 'followerCount', 'followersCount',
+        'subscriberCount', 'audienceSize', 'friends', 'connections',
+        'members', 'fan_count', 'followers_count'
+    ];
+    const viewKeys = [
+        'views', 'viewCount', 'viewsCount',
+        'impressionCount', 'pageViews'
+    ];
+    const likeKeys = [
+        'likes', 'likeCount', 'likesCount', 'reactions'
+    ];
+    const postKeys = [
+        'posts', 'postCount', 'mediaCount', 'videoCount',
+        'photos', 'articles', 'updates', 'tweets'
+    ];
+
     followers =
         firstPositiveMetric(
             findAllValues(
                 jsonLd,
-                [
-                    'followers',
-                    'followerCount',
-                    'followersCount',
-                    'subscriberCount',
-                    'audienceSize'
-                ]
+                followerKeys
             )
         );
 
@@ -931,11 +943,7 @@ function extractSocialProfileMetrics(
         firstPositiveMetric(
             findAllValues(
                 jsonLd,
-                [
-                    'likes',
-                    'likeCount',
-                    'likesCount'
-                ]
+                likeKeys
             )
         );
 
@@ -943,12 +951,7 @@ function extractSocialProfileMetrics(
         firstPositiveMetric(
             findAllValues(
                 jsonLd,
-                [
-                    'views',
-                    'viewCount',
-                    'viewsCount',
-                    'impressionCount'
-                ]
+                viewKeys
             )
         );
 
@@ -956,18 +959,12 @@ function extractSocialProfileMetrics(
         firstPositiveMetric(
             findAllValues(
                 jsonLd,
-                [
-                    'posts',
-                    'postCount',
-                    'mediaCount',
-                    'videoCount',
-                    'numberOfItems'
-                ]
+                postKeys
             )
         );
 
     /* ---------------------------------------------------------------
-       2. Meta description (often contains "X followers")
+       2. Meta description (often contains counts)
     ---------------------------------------------------------------- */
 
     const metaDescription =
@@ -1000,28 +997,27 @@ function extractSocialProfileMetrics(
             metaDescription
         );
 
+    // Expanded pattern sets
     const followerPatterns = [
-        /([\d.,]+\s*[KMBT]?)\s*(?:followers|follower)/i,
-        /(?:followers|follower)[^0-9]{0,50}([\d.,]+\s*[KMBT]?)/i,
-        /([\d.,]+\s*[KMBT]?)\s*(?:subscribers|subscriber)/i,
-        /(?:subscribers|subscriber)[^0-9]{0,50}([\d.,]+\s*[KMBT]?)/i
+        /([\d.,]+\s*[KMBT]?)\s*(?:followers|follower|friends?|connections?|members?)/i,
+        /(?:followers|follower|friends?|connections?|members?)[^0-9]{0,50}([\d.,]+\s*[KMBT]?)/i,
+        /([\d.,]+\s*[KMBT]?)\s*(?:subscribers?)/i,
+        /(?:subscribers?)[^0-9]{0,50}([\d.,]+\s*[KMBT]?)/i
     ];
 
     const likePatterns = [
-        /([\d.,]+\s*[KMBT]?)\s*(?:likes|like)/i,
-        /(?:likes|like)[^0-9]{0,50}([\d.,]+\s*[KMBT]?)/i
+        /([\d.,]+\s*[KMBT]?)\s*(?:likes?|reactions?)/i,
+        /(?:likes?|reactions?)[^0-9]{0,50}([\d.,]+\s*[KMBT]?)/i
     ];
 
     const postPatterns = [
-        /([\d.,]+\s*[KMBT]?)\s*(?:posts|post)/i,
-        /([\d.,]+\s*[KMBT]?)\s*(?:photos|photo)/i,
-        /([\d.,]+\s*[KMBT]?)\s*(?:videos|video)/i
+        /([\d.,]+\s*[KMBT]?)\s*(?:posts?|postings?|photos?|videos?|articles?|updates?|tweets?)/i,
+        /(?:posts?|postings?|photos?|videos?|articles?|updates?|tweets?)[^0-9]{0,50}([\d.,]+\s*[KMBT]?)/i
     ];
 
     const viewPatterns = [
-        /([\d.,]+\s*[KMBT]?)\s*(?:views|view)/i,
-        /(?:views|view)[^0-9]{0,50}([\d.,]+\s*[KMBT]?)/i,
-        /([\d.,]+\s*[KMBT]?)\s*(?:impressions|impression)/i
+        /([\d.,]+\s*[KMBT]?)\s*(?:views?|impressions?|visits?)/i,
+        /(?:views?|impressions?|visits?)[^0-9]{0,50}([\d.,]+\s*[KMBT]?)/i
     ];
 
     function findPatternMetric(
@@ -1141,7 +1137,6 @@ function extractSocialProfileMetrics(
                 JSON.parse(
                     jsonMatch[1]
                 );
-            // Only push if it looks like a data object
             if (
                 typeof parsed === 'object' &&
                 parsed !== null
@@ -1151,25 +1146,15 @@ function extractSocialProfileMetrics(
         } catch (e) { /* ignore */ }
     }
 
-    // Now search all these JSON objects for metrics
+    // Now search all these JSON objects for metrics using the same keys
     for (
         const obj
         of jsonObjects
     ) {
-        // Recursively find values
         const foundFollowers =
             recursiveFindValue(
                 obj,
-                [
-                    'followers',
-                    'followerCount',
-                    'followersCount',
-                    'follower_count',
-                    'followers_count',
-                    'edge_followed_by',
-                    'fan_count',
-                    'subscriberCount'
-                ]
+                followerKeys
             );
         if (foundFollowers) {
             const n =
@@ -1184,15 +1169,7 @@ function extractSocialProfileMetrics(
         const foundPosts =
             recursiveFindValue(
                 obj,
-                [
-                    'posts',
-                    'postCount',
-                    'mediaCount',
-                    'videoCount',
-                    'media_count',
-                    'video_count',
-                    'edge_owner_to_timeline_media'
-                ]
+                postKeys
             );
         if (foundPosts) {
             const n =
@@ -1207,12 +1184,7 @@ function extractSocialProfileMetrics(
         const foundLikes =
             recursiveFindValue(
                 obj,
-                [
-                    'likes',
-                    'likeCount',
-                    'likesCount',
-                    'like_count'
-                ]
+                likeKeys
             );
         if (foundLikes) {
             const n =
@@ -1227,13 +1199,7 @@ function extractSocialProfileMetrics(
         const foundViews =
             recursiveFindValue(
                 obj,
-                [
-                    'views',
-                    'viewCount',
-                    'viewsCount',
-                    'view_count',
-                    'impressionCount'
-                ]
+                viewKeys
             );
         if (foundViews) {
             const n =
@@ -1247,11 +1213,11 @@ function extractSocialProfileMetrics(
     }
 
     /* ---------------------------------------------------------------
-       4. Platform-specific special handling
+       4. Platform-specific special handling (but still generic)
     ---------------------------------------------------------------- */
 
+    // For Instagram: edge_followed_by, edge_owner_to_timeline_media
     if (platform === 'instagram') {
-        // Instagram often uses "edge_followed_by" with a nested "count"
         const edgeFollowMatch =
             raw.match(
                 /"edge_followed_by"\s*:\s*\{\s*"count"\s*:\s*(\d+)/i
@@ -1274,7 +1240,6 @@ function extractSocialProfileMetrics(
                 );
         }
 
-        // Also look for "follower_count" and "media_count" directly
         if (!followers) {
             const match =
                 raw.match(
@@ -1301,8 +1266,8 @@ function extractSocialProfileMetrics(
         }
     }
 
+    // For Facebook: fan_count, followers_count, also "friends"
     if (platform === 'facebook') {
-        // Look for fan_count or followers_count
         const fanMatch =
             raw.match(
                 /"fan_count"\s*:\s*(\d+)/i
@@ -1323,7 +1288,6 @@ function extractSocialProfileMetrics(
                     followersMatch[1]
                 );
         }
-        // Also "page_followers"
         const pageFollowMatch =
             raw.match(
                 /"page_followers"\s*:\s*\{\s*"value"\s*:\s*(\d+)/i
@@ -1334,10 +1298,36 @@ function extractSocialProfileMetrics(
                     pageFollowMatch[1]
                 );
         }
+        // For personal profiles: "friends" count
+        if (!followers) {
+            const friendsMatch =
+                raw.match(
+                    /"friends"\s*:\s*\{\s*"count"\s*:\s*(\d+)/i
+                );
+            if (friendsMatch) {
+                followers =
+                    parseMetric(
+                        friendsMatch[1]
+                    );
+            }
+        }
+        // Also look for "friends_count"
+        if (!followers) {
+            const friendsCountMatch =
+                raw.match(
+                    /"friends_count"\s*:\s*(\d+)/i
+                );
+            if (friendsCountMatch) {
+                followers =
+                    parseMetric(
+                        friendsCountMatch[1]
+                    );
+            }
+        }
     }
 
+    // For LinkedIn: followerCount, followersCount, connections
     if (platform === 'linkedin') {
-        // Look for followerCount in embedded JSON
         const followerCountMatch =
             raw.match(
                 /"followerCount"\s*:\s*(\d+)/i
@@ -1369,6 +1359,19 @@ function extractSocialProfileMetrics(
                 followers =
                     parseMetric(
                         match[1]
+                    );
+            }
+        }
+        // For personal profiles: "connections"
+        if (!followers) {
+            const connMatch =
+                raw.match(
+                    /"connections"\s*:\s*(\d+)/i
+                );
+            if (connMatch) {
+                followers =
+                    parseMetric(
+                        connMatch[1]
                     );
             }
         }
@@ -1407,7 +1410,7 @@ function extractSocialProfileMetrics(
                     );
             }
         }
-        // Post count from updateCount
+        // Post count from updateCount or articles
         if (!posts) {
             const updateMatch =
                 raw.match(
@@ -1417,6 +1420,18 @@ function extractSocialProfileMetrics(
                 posts =
                     parseMetric(
                         updateMatch[1]
+                    );
+            }
+        }
+        if (!posts) {
+            const articlesMatch =
+                raw.match(
+                    /"articles"\s*:\s*(\d+)/i
+                );
+            if (articlesMatch) {
+                posts =
+                    parseMetric(
+                        articlesMatch[1]
                     );
             }
         }
@@ -1511,7 +1526,7 @@ function extractSocialProfileMetrics(
 }
 
 /* ============================================================================
-   URL PARSERS
+   URL PARSERS (kept for API calls, but made less strict for public scraping)
 ============================================================================ */
 
 function parseYouTube(
@@ -1680,6 +1695,7 @@ function parseTwitterUsername(
 function parseFacebookId(
     rawUrl
 ) {
+    // For API calls; but we also accept any URL for public scraping
     try {
         const u =
             new URL(rawUrl);
@@ -1779,6 +1795,8 @@ function parseInstagramUsername(
 }
 
 function parseLinkedInOrg(profileUrl) {
+    // This is now optional – we just return a vanity if we can parse one,
+    // but we don't error if we can't.
     if (!profileUrl || typeof profileUrl !== 'string') {
         return null;
     }
@@ -1861,6 +1879,8 @@ function parseLinkedInOrg(profileUrl) {
             }
         }
 
+        // No structured vanity found, but we can still try to use the whole path as a "vanity"
+        // for the purpose of public scraping, we don't actually need it.
         return null;
 
     } catch (err) {
@@ -2356,6 +2376,7 @@ async function fetchFacebook(
     profileUrl,
     accessToken
 ) {
+    // Try API first, but we'll always fall back to public scraping
     const pageId =
         parseFacebookId(
             profileUrl
@@ -2491,6 +2512,7 @@ async function fetchFacebook(
         }
     }
 
+    // Public URL fallback
     const page =
         await fetchPublicPage(
             profileUrl
@@ -2874,29 +2896,21 @@ async function fetchInstagram(
 }
 
 /* ============================================================================
-   LINKEDIN  (now supports both company and personal profiles)
+   LINKEDIN (now accepts any URL and extracts generically)
 ============================================================================ */
 
 async function fetchLinkedIn(
     profileUrl,
     accessToken
 ) {
+    // We try to parse for API calls, but if we can't, we just fetch the URL directly
     const parsed =
         parseLinkedInOrg(
             profileUrl
         );
 
-    if (!parsed) {
-        return {
-            status: 'invalid_url',
-            error:
-                'Expected LinkedIn profile URL such as https://www.linkedin.com/company/company-name/ or https://www.linkedin.com/in/username/'
-        };
-    }
-
-    const vanity = parsed.vanity;
-
-    if (accessToken) {
+    // If we have an API token and a valid vanity, try official API
+    if (accessToken && parsed) {
         try {
             const headers = {
                 Authorization:
@@ -2912,7 +2926,7 @@ async function fetchLinkedIn(
                     'application/json'
             };
 
-            // For companies we use /organizations, for persons we use /people
+            const vanity = parsed.vanity;
             let endpoint;
             if (parsed.type === 'company') {
                 endpoint =
@@ -2920,7 +2934,6 @@ async function fetchLinkedIn(
                     `?q=vanityName` +
                     `&vanityName=${encodeURIComponent(vanity)}`;
             } else {
-                // For personal profiles, we use /people with vanityName
                 endpoint =
                     `https://api.linkedin.com/rest/people` +
                     `?q=vanityName` +
@@ -2948,7 +2961,6 @@ async function fetchLinkedIn(
                     let comments = 0;
                     let shares = 0;
 
-                    // For companies, we can get follower count from networkSizes
                     if (parsed.type === 'company') {
                         const orgId =
                             element.id;
@@ -2975,7 +2987,6 @@ async function fetchLinkedIn(
                                 );
                         }
 
-                        // Get post statistics
                         const organizationUrn =
                             `urn:li:organization:${orgId}`;
 
@@ -3069,10 +3080,8 @@ async function fetchLinkedIn(
                                     : 0
                         };
                     } else {
-                        // Personal profile - try to get follower count if possible
-                        // LinkedIn API may not expose follower count for personal profiles without special permissions
-                        // We'll try to get it from the profile data if available
-                        // But often it's not exposed, so we'll fall back to public URL extraction
+                        // Personal profile – try to get followers if possible
+                        // For now, we skip and fall back to public scraping
                     }
                 }
             }
@@ -3085,12 +3094,7 @@ async function fetchLinkedIn(
         }
     }
 
-    /*
-     * ------------------------------------------------------------------------
-     * PUBLIC LINKEDIN PROFILE URL  (works for both company and personal)
-     * ------------------------------------------------------------------------
-     */
-
+    // PUBLIC URL – this works for ANY LinkedIn URL (personal, company, etc.)
     const page =
         await fetchPublicPage(
             profileUrl
@@ -3102,7 +3106,7 @@ async function fetchLinkedIn(
             source: 'public_url',
 
             name:
-                vanity,
+                'LinkedIn Profile',
 
             followers: 0,
             views: 0,
@@ -3122,6 +3126,12 @@ async function fetchLinkedIn(
             'linkedin'
         );
 
+    // If we have a vanity from parsing, use it as name fallback
+    const vanityName =
+        parsed && parsed.vanity
+            ? parsed.vanity
+            : 'LinkedIn Profile';
+
     return {
         status:
             metrics.hasAnyData
@@ -3132,7 +3142,7 @@ async function fetchLinkedIn(
 
         name:
             metrics.name ||
-            vanity,
+            vanityName,
 
         description:
             metrics.description ||
@@ -3456,10 +3466,10 @@ app.get(
                 'Kiwami Marketing System API',
 
             version:
-                '3.2.0',
+                '3.3.0',
 
             analytics:
-                'URL retrieval + official API fallback (improved extraction + personal LinkedIn support)',
+                'Generic extraction: followers, friends, connections, members, likes, posts, views',
 
             timestamp:
                 new Date().toISOString()
@@ -4598,7 +4608,7 @@ app.listen(
         );
 
         console.log(
-            '   Analytics:   URL retrieval enabled (improved extraction + personal LinkedIn support)'
+            '   Analytics:   Generic extraction (friends, connections, members, etc.)'
         );
 
         console.log(
