@@ -1208,24 +1208,8 @@ function extractPublicMetrics(
 }
 
 /* ============================================================================
-   SOCIAL PROFILE METADATA EXTRACTION
+   SOCIAL PROFILE METADATA EXTRACTION  (IMPROVED)
 ============================================================================ */
-
-/*
- * Facebook, Instagram and LinkedIn often expose useful profile information
- * through metadata rather than ordinary visible HTML.
- *
- * This extractor deliberately checks:
- *
- *   1. OpenGraph metadata
- *   2. Twitter metadata
- *   3. normal meta description
- *   4. JSON-LD
- *   5. raw embedded page JSON
- *   6. decoded page text
- *
- * It does NOT replace the existing YouTube/Twitter/TikTok extraction.
- */
 
 function extractSocialProfileMetrics(
     html,
@@ -1241,42 +1225,9 @@ function extractSocialProfileMetrics(
     let likes = 0;
     let posts = 0;
 
-    /*
-     * ------------------------------------------------------------
-     * 1. Metadata descriptions
-     * ------------------------------------------------------------
-     */
-
-    const metaDescription =
-        [
-            getMetaProperty(
-                html,
-                'og:description'
-            ),
-
-            getMetaName(
-                html,
-                'description'
-            ),
-
-            getMetaName(
-                html,
-                'twitter:description'
-            ),
-
-            getMetaProperty(
-                html,
-                'og:title'
-            )
-        ]
-            .filter(Boolean)
-            .join(' | ');
-
-    /*
-     * ------------------------------------------------------------
-     * 2. JSON-LD
-     * ------------------------------------------------------------
-     */
+    /* ---------------------------------------------------------------
+       1. JSON-LD
+    ---------------------------------------------------------------- */
 
     const jsonLd =
         base.jsonLd || [];
@@ -1334,21 +1285,34 @@ function extractSocialProfileMetrics(
             )
         );
 
-    /*
-     * ------------------------------------------------------------
-     * 3. Meta description parsing
-     * ------------------------------------------------------------
-     *
-     * Instagram, Facebook and LinkedIn frequently put metrics here.
-     *
-     * Examples:
-     *
-     * "12.5K Followers, 340 Following, 85 Posts"
-     *
-     * "5,200 followers · 4,800 likes"
-     *
-     * "Company Name | 12,000 followers"
-     */
+    /* ---------------------------------------------------------------
+       2. Meta description
+    ---------------------------------------------------------------- */
+
+    const metaDescription =
+        [
+            getMetaProperty(
+                html,
+                'og:description'
+            ),
+
+            getMetaName(
+                html,
+                'description'
+            ),
+
+            getMetaName(
+                html,
+                'twitter:description'
+            ),
+
+            getMetaProperty(
+                html,
+                'og:title'
+            )
+        ]
+            .filter(Boolean)
+            .join(' | ');
 
     const metadataText =
         decodeHtml(
@@ -1441,19 +1405,250 @@ function extractSocialProfileMetrics(
             );
     }
 
-    /*
-     * ------------------------------------------------------------
-     * 4. Entire HTML / embedded JSON
-     * ------------------------------------------------------------
-     *
-     * Social platforms frequently serialize profile data into the
-     * HTML without rendering it as normal text.
-     */
+    /* ---------------------------------------------------------------
+       3. Embedded JSON / data structures (platform-specific)
+    ---------------------------------------------------------------- */
 
     const raw =
         decodeHtml(
             String(html || '')
         );
+
+    // --- Instagram specific ---
+    if (platform === 'instagram') {
+        // Try to find `window._sharedData` or `__additionalDataLoaded`
+        const sharedDataMatch =
+            raw.match(
+                /window\._sharedData\s*=\s*({.+?});\s*<\/script>/i
+            );
+        if (sharedDataMatch) {
+            try {
+                const sharedData =
+                    JSON.parse(
+                        sharedDataMatch[1]
+                    );
+                // Look for follower count in entry_data.ProfilePage[0].graphql.user
+                const user =
+                    sharedData?.entry_data?.ProfilePage?.[0]?.graphql?.user;
+                if (user) {
+                    followers =
+                        toNumber(
+                            user.follower_count
+                        ) || followers;
+                    posts =
+                        toNumber(
+                            user.media_count
+                        ) || posts;
+                }
+            } catch (e) { /* ignore */ }
+        }
+
+        // Try `__additionalDataLoaded` (newer Instagram)
+        const additionalDataMatch =
+            raw.match(
+                /<script[^>]*>__additionalDataLoaded\([^)]+\);\s*({.+?})<\/script>/i
+            );
+        if (additionalDataMatch) {
+            try {
+                const data =
+                    JSON.parse(
+                        additionalDataMatch[1]
+                    );
+                const user =
+                    data?.user || data?.graphql?.user;
+                if (user) {
+                    followers =
+                        toNumber(
+                            user.follower_count
+                        ) || followers;
+                    posts =
+                        toNumber(
+                            user.media_count
+                        ) || posts;
+                }
+            } catch (e) { /* ignore */ }
+        }
+
+        // Classic edge_followed_by
+        if (!followers) {
+            const match =
+                raw.match(
+                    /"edge_followed_by"\s*:\s*\{\s*"count"\s*:\s*(\d+)/i
+                );
+            if (match) {
+                followers =
+                    parseMetric(
+                        match[1]
+                    );
+            }
+        }
+        if (!posts) {
+            const match =
+                raw.match(
+                    /"edge_owner_to_timeline_media"\s*:\s*\{\s*"count"\s*:\s*(\d+)/i
+                );
+            if (match) {
+                posts =
+                    parseMetric(
+                        match[1]
+                    );
+            }
+        }
+        if (!followers) {
+            const match =
+                raw.match(
+                    /"follower_count"\s*:\s*(\d+)/i
+                );
+            if (match) {
+                followers =
+                    parseMetric(
+                        match[1]
+                    );
+            }
+        }
+        if (!posts) {
+            const match =
+                raw.match(
+                    /"media_count"\s*:\s*(\d+)/i
+                );
+            if (match) {
+                posts =
+                    parseMetric(
+                        match[1]
+                    );
+            }
+        }
+    }
+
+    // --- Facebook specific ---
+    if (platform === 'facebook') {
+        // Look for fan_count or followers_count in embedded JSON
+        const fanMatch =
+            raw.match(
+                /"fan_count"\s*:\s*(\d+)/i
+            );
+        if (fanMatch) {
+            followers =
+                parseMetric(
+                    fanMatch[1]
+                );
+        }
+        const followersMatch =
+            raw.match(
+                /"followers_count"\s*:\s*(\d+)/i
+            );
+        if (followersMatch && !followers) {
+            followers =
+                parseMetric(
+                    followersMatch[1]
+                );
+        }
+        // Also look for "page_followers" in JSON-LD or structured data
+        if (!followers) {
+            const pageFollowMatch =
+                raw.match(
+                    /"page_followers"\s*:\s*\{\s*"value"\s*:\s*(\d+)/i
+                );
+            if (pageFollowMatch) {
+                followers =
+                    parseMetric(
+                        pageFollowMatch[1]
+                    );
+            }
+        }
+    }
+
+    // --- LinkedIn specific ---
+    if (platform === 'linkedin') {
+        // Look for "followerCount" in embedded JSON
+        const followerCountMatch =
+            raw.match(
+                /"followerCount"\s*:\s*(\d+)/i
+            );
+        if (followerCountMatch) {
+            followers =
+                parseMetric(
+                    followerCountMatch[1]
+                );
+        }
+        // Also try "followers" or "followersCount"
+        if (!followers) {
+            const followersCountMatch =
+                raw.match(
+                    /"followersCount"\s*:\s*(\d+)/i
+                );
+            if (followersCountMatch) {
+                followers =
+                    parseMetric(
+                        followersCountMatch[1]
+                    );
+            }
+        }
+        if (!followers) {
+            const followersMatch =
+                raw.match(
+                    /"followers"\s*:\s*(\d+)/i
+                );
+            if (followersMatch) {
+                followers =
+                    parseMetric(
+                        followersMatch[1]
+                    );
+            }
+        }
+        // Also try to find in data-* attributes (common in LinkedIn)
+        const dataFollowersMatch =
+            raw.match(
+                /data-followers-count\s*=\s*["'](\d+)["']/i
+            );
+        if (dataFollowersMatch && !followers) {
+            followers =
+                parseMetric(
+                    dataFollowersMatch[1]
+                );
+        }
+        // Also try <span> with class "followers-count"
+        const spanFollowers =
+            raw.match(
+                /<span[^>]*class="[^"]*followers-count[^"]*"[^>]*>([\d,]+)<\/span>/i
+            );
+        if (spanFollowers && !followers) {
+            followers =
+                parseMetric(
+                    spanFollowers[1]
+                );
+        }
+        // Views / impressions might be found in "impressionCount"
+        if (!views) {
+            const impMatch =
+                raw.match(
+                    /"impressionCount"\s*:\s*(\d+)/i
+                );
+            if (impMatch) {
+                views =
+                    parseMetric(
+                        impMatch[1]
+                    );
+            }
+        }
+        // Post count could be from "updateCount" or "shareCount"
+        if (!posts) {
+            const updateMatch =
+                raw.match(
+                    /"updateCount"\s*:\s*(\d+)/i
+                );
+            if (updateMatch) {
+                posts =
+                    parseMetric(
+                        updateMatch[1]
+                    );
+            }
+        }
+    }
+
+    /* ---------------------------------------------------------------
+       4. Generic JSON patterns (fallback for any platform)
+    ---------------------------------------------------------------- */
 
     const followerJsonPatterns = [
         /["']followers_count["']\s*:\s*["']?([\d.,]+(?:\s*[KMBT])?)["']?/i,
@@ -1542,11 +1737,9 @@ function extractSocialProfileMetrics(
             );
     }
 
-    /*
-     * ------------------------------------------------------------
-     * 5. Visible text
-     * ------------------------------------------------------------
-     */
+    /* ---------------------------------------------------------------
+       5. Visible text (last resort)
+    ---------------------------------------------------------------- */
 
     const visibleText =
         stripTags(
@@ -1585,136 +1778,9 @@ function extractSocialProfileMetrics(
             );
     }
 
-    /*
-     * ------------------------------------------------------------
-     * 6. Platform-specific patterns
-     * ------------------------------------------------------------
-     */
-
-    if (
-        platform === 'instagram'
-    ) {
-        /*
-         * Instagram sometimes stores the profile statistics as
-         * "edge_followed_by" and "edge_owner_to_timeline_media".
-         */
-
-        if (!followers) {
-            const match =
-                raw.match(
-                    /["']edge_followed_by["'][\s\S]{0,1000}?["']count["']\s*:\s*(\d+)/i
-                );
-
-            if (match) {
-                followers =
-                    parseMetric(
-                        match[1]
-                    );
-            }
-        }
-
-        if (!posts) {
-            const match =
-                raw.match(
-                    /["']edge_owner_to_timeline_media["'][\s\S]{0,1000}?["']count["']\s*:\s*(\d+)/i
-                );
-
-            if (match) {
-                posts =
-                    parseMetric(
-                        match[1]
-                    );
-            }
-        }
-
-        /*
-         * Newer Instagram structures.
-         */
-        if (!followers) {
-            const match =
-                raw.match(
-                    /["']follower_count["']\s*:\s*(\d+)/i
-                );
-
-            if (match) {
-                followers =
-                    parseMetric(
-                        match[1]
-                    );
-            }
-        }
-
-        if (!posts) {
-            const match =
-                raw.match(
-                    /["']media_count["']\s*:\s*(\d+)/i
-                );
-
-            if (match) {
-                posts =
-                    parseMetric(
-                        match[1]
-                    );
-            }
-        }
-    }
-
-    if (
-        platform === 'facebook'
-    ) {
-        /*
-         * Facebook sometimes exposes fan/follower counts in
-         * serialized page information.
-         */
-
-        if (!followers) {
-            const match =
-                raw.match(
-                    /["'](?:followers_count|fan_count)["']\s*:\s*(\d+)/i
-                );
-
-            if (match) {
-                followers =
-                    parseMetric(
-                        match[1]
-                    );
-            }
-        }
-    }
-
-    if (
-        platform === 'linkedin'
-    ) {
-        /*
-         * LinkedIn company pages commonly expose follower counts
-         * in embedded JSON.
-         */
-
-        if (!followers) {
-            const match =
-                raw.match(
-                    /["'](?:followerCount|followersCount|followers)["']\s*:\s*(\d+)/i
-                );
-
-            if (match) {
-                followers =
-                    parseMetric(
-                        match[1]
-                    );
-            }
-        }
-
-        /*
-         * LinkedIn may expose employee/company counts, but those
-         * are NOT treated as posts or followers.
-         */
-    }
-
-    /*
-     * ------------------------------------------------------------
-     * 7. Determine whether ANY useful data was found.
-     * ------------------------------------------------------------
-     */
+    /* ---------------------------------------------------------------
+       6. Name & description
+    ---------------------------------------------------------------- */
 
     const name =
         base.title ||
@@ -1725,16 +1791,15 @@ function extractSocialProfileMetrics(
         metaDescription ||
         '';
 
-    const hasAnyData =
-        Boolean(
-            name ||
-            description ||
-            base.image ||
-            followers ||
-            views ||
-            likes ||
-            posts
-        );
+    const hasAnyData = Boolean(
+        name ||
+        description ||
+        base.image ||
+        followers ||
+        views ||
+        likes ||
+        posts
+    );
 
     return {
         hasAnyData,
@@ -2029,46 +2094,21 @@ function parseInstagramUsername(
 }
 
 function parseLinkedInOrg(profileUrl) {
-    console.log('================================');
-    console.log('[LinkedIn DEBUG] RAW URL:', profileUrl);
-    console.log('[LinkedIn DEBUG] TYPE:', typeof profileUrl);
-
     if (!profileUrl || typeof profileUrl !== 'string') {
-        console.log('[LinkedIn DEBUG] URL is empty or not a string');
         return null;
     }
 
     const cleaned =
         profileUrl.trim();
 
-    console.log(
-        '[LinkedIn DEBUG] CLEANED URL:',
-        cleaned
-    );
-
     try {
         const url =
             new URL(cleaned);
-
-        console.log(
-            '[LinkedIn DEBUG] HOST:',
-            url.hostname
-        );
-
-        console.log(
-            '[LinkedIn DEBUG] PATH:',
-            url.pathname
-        );
 
         const parts =
             url.pathname
                 .split('/')
                 .filter(Boolean);
-
-        console.log(
-            '[LinkedIn DEBUG] PATH PARTS:',
-            parts
-        );
 
         const companyIndex =
             parts.findIndex(
@@ -2077,26 +2117,12 @@ function parseLinkedInOrg(profileUrl) {
                     'company'
             );
 
-        console.log(
-            '[LinkedIn DEBUG] COMPANY INDEX:',
-            companyIndex
-        );
-
         if (companyIndex === -1) {
-            console.log(
-                '[LinkedIn DEBUG] No /company/ found'
-            );
-
             return null;
         }
 
         const vanity =
             parts[companyIndex + 1];
-
-        console.log(
-            '[LinkedIn DEBUG] VANITY:',
-            vanity
-        );
 
         if (!vanity) {
             return null;
@@ -2107,14 +2133,64 @@ function parseLinkedInOrg(profileUrl) {
         );
 
     } catch (err) {
-        console.error(
-            '[LinkedIn DEBUG] URL ERROR:',
-            err?.message || err
-        );
-
         return null;
     }
 }
+
+function parseTikTokUsername(
+    rawUrl
+) {
+    try {
+        const u =
+            new URL(rawUrl);
+
+        const hostname =
+            u.hostname
+                .replace(/^www\./, '')
+                .toLowerCase();
+
+        if (
+            hostname !== 'tiktok.com'
+        ) {
+            return null;
+        }
+
+        const first =
+            u.pathname
+                .replace(
+                    /^\/+|\/+$/g,
+                    ''
+                )
+                .split('/')[0];
+
+        if (!first) {
+            return null;
+        }
+
+        if (
+            [
+                'video',
+                'music',
+                'search',
+                'tag',
+                'trending'
+            ].includes(
+                first.toLowerCase()
+            )
+        ) {
+            return null;
+        }
+
+        return first.replace(
+            /^@/,
+            ''
+        );
+
+    } catch {
+        return null;
+    }
+}
+
 /* ============================================================================
    YOUTUBE
 ============================================================================ */
@@ -2555,7 +2631,7 @@ async function fetchTwitter(
 }
 
 /* ============================================================================
-   FACEBOOK
+   FACEBOOK  (IMPROVED)
 ============================================================================ */
 
 async function fetchFacebook(
@@ -2571,11 +2647,7 @@ async function fetchFacebook(
      * ------------------------------------------------------------------------
      * OFFICIAL META API
      * ------------------------------------------------------------------------
-     *
-     * If a token exists, use it for the most accurate information available.
-     * If it fails or is unavailable, we STILL continue to the public URL.
      */
-
     if (
         accessToken &&
         pageId
@@ -2706,12 +2778,6 @@ async function fetchFacebook(
                 '[Facebook] Meta API error:',
                 err?.message || err
             );
-
-            /*
-             * IMPORTANT:
-             * Do NOT stop here.
-             * Continue to the public URL below.
-             */
         }
     }
 
@@ -2719,11 +2785,6 @@ async function fetchFacebook(
      * ------------------------------------------------------------------------
      * PUBLIC FACEBOOK URL
      * ------------------------------------------------------------------------
-     *
-     * This is NOT merely an error fallback.
-     *
-     * The supplied URL is actively retrieved and all publicly exposed
-     * metadata is inspected.
      */
 
     const page =
@@ -2756,12 +2817,6 @@ async function fetchFacebook(
             page.html,
             'facebook'
         );
-
-    /*
-     * Even if only the name or description was exposed, return it.
-     *
-     * Do NOT require followers + likes + posts simultaneously.
-     */
 
     return {
         status:
@@ -2815,9 +2870,8 @@ async function fetchFacebook(
     };
 }
 
-
 /* ============================================================================
-   INSTAGRAM
+   INSTAGRAM  (IMPROVED)
 ============================================================================ */
 
 async function fetchInstagram(
@@ -2841,10 +2895,7 @@ async function fetchInstagram(
      * ------------------------------------------------------------------------
      * OFFICIAL META API
      * ------------------------------------------------------------------------
-     *
-     * Try the connected professional Instagram account if available.
      */
-
     if (accessToken) {
         try {
             const pagesEndpoint =
@@ -3037,10 +3088,6 @@ async function fetchInstagram(
                 '[Instagram] Meta API error:',
                 err?.message || err
             );
-
-            /*
-             * Continue to the public URL.
-             */
         }
     }
 
@@ -3048,20 +3095,6 @@ async function fetchInstagram(
      * ------------------------------------------------------------------------
      * PUBLIC INSTAGRAM URL
      * ------------------------------------------------------------------------
-     *
-     * Always retrieve the supplied URL.
-     *
-     * Instagram commonly places useful information inside:
-     *
-     *   og:title
-     *   og:description
-     *   meta description
-     *   JSON-LD
-     *   __additionalDataLoaded
-     *   __next_f.push
-     *   embedded profile JSON
-     *
-     * extractSocialProfileMetrics() checks all of these.
      */
 
     const page =
@@ -3147,9 +3180,8 @@ async function fetchInstagram(
     };
 }
 
-
 /* ============================================================================
-   LINKEDIN
+   LINKEDIN  (IMPROVED)
 ============================================================================ */
 
 async function fetchLinkedIn(
@@ -3174,7 +3206,6 @@ async function fetchLinkedIn(
      * OFFICIAL LINKEDIN API
      * ------------------------------------------------------------------------
      */
-
     if (accessToken) {
         try {
             const headers = {
@@ -3215,9 +3246,6 @@ async function fetchLinkedIn(
 
                     let followers = 0;
 
-                    /*
-                     * Try follower information.
-                     */
                     const followerEndpoint =
                         `https://api.linkedin.com/v2/networkSizes/` +
                         `urn%3Ali%3Aorganization%3A${encodeURIComponent(orgId)}` +
@@ -3346,10 +3374,6 @@ async function fetchLinkedIn(
                 '[LinkedIn] API error:',
                 err?.message || err
             );
-
-            /*
-             * Continue to public URL.
-             */
         }
     }
 
@@ -3357,9 +3381,6 @@ async function fetchLinkedIn(
      * ------------------------------------------------------------------------
      * PUBLIC LINKEDIN COMPANY URL
      * ------------------------------------------------------------------------
-     *
-     * LinkedIn company pages frequently expose useful information through
-     * OpenGraph metadata even when the normal page HTML is heavily dynamic.
      */
 
     const page =
@@ -3442,6 +3463,7 @@ async function fetchLinkedIn(
                 : 'LinkedIn returned the public page, but did not expose usable public statistics.'
     };
 }
+
 /* ============================================================================
    TIKTOK
 ============================================================================ */
@@ -3732,10 +3754,10 @@ app.get(
                 'Kiwami Marketing System API',
 
             version:
-                '3.0.0',
+                '3.1.0',
 
             analytics:
-                'URL retrieval + official API fallback',
+                'URL retrieval + official API fallback (improved extraction)',
 
             timestamp:
                 new Date().toISOString()
@@ -4895,7 +4917,7 @@ app.listen(
         );
 
         console.log(
-            '   Analytics:   URL retrieval enabled'
+            '   Analytics:   URL retrieval enabled (improved extraction)'
         );
 
         console.log(
