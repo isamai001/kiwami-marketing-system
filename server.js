@@ -913,7 +913,7 @@ function publicPageBaseData(
 }
 
 /* ============================================================================
-   PUBLIC NUMBER EXTRACTION
+   PUBLIC NUMBER EXTRACTION (ENHANCED)
 ============================================================================ */
 
 function extractPublicMetrics(
@@ -926,45 +926,62 @@ function extractPublicMetrics(
     const jsonLd =
         base.jsonLd;
 
+    // Expanded keyword sets for better coverage
+    const followerKeys = [
+        'followers',
+        'followerCount',
+        'subscriberCount',
+        'userInteractionCount',
+        'friends',
+        'connections',
+        'members',
+        'fan_count',
+        'followers_count'
+    ];
+
+    const viewKeys = [
+        'viewCount',
+        'views',
+        'interactionCount',
+        'impressionCount'
+    ];
+
+    const likeKeys = [
+        'likeCount',
+        'likes'
+    ];
+
+    const postKeys = [
+        'videoCount',
+        'postCount',
+        'numberOfItems',
+        'interactionCount',
+        'mediaCount',
+        'articles'
+    ];
+
     const jsonLdFollowers =
         findAllValues(
             jsonLd,
-            [
-                'followers',
-                'followerCount',
-                'subscriberCount',
-                'userInteractionCount'
-            ]
+            followerKeys
         );
 
     const jsonLdViews =
         findAllValues(
             jsonLd,
-            [
-                'viewCount',
-                'views',
-                'interactionCount'
-            ]
+            viewKeys
         );
 
     const jsonLdLikes =
         findAllValues(
             jsonLd,
-            [
-                'likeCount',
-                'likes'
-            ]
+            likeKeys
         );
 
     const jsonLdPosts =
         findAllValues(
             jsonLd,
-            [
-                'videoCount',
-                'postCount',
-                'numberOfItems',
-                'interactionCount'
-            ]
+            postKeys
         );
 
     let followers =
@@ -989,8 +1006,7 @@ function extractPublicMetrics(
 
     /*
      * Generic visible-text extraction.
-     *
-     * These are intentionally conservative.
+     * Added more patterns for friends/connections/members.
      */
     const text =
         stripTags(html);
@@ -999,12 +1015,19 @@ function extractPublicMetrics(
         /([\d.,]+[KMB]?)\s*(?:followers|follower)/i,
         /(?:followers|follower)[^0-9]{0,30}([\d.,]+[KMB]?)/i,
         /([\d.,]+[KMB]?)\s*(?:subscribers|subscriber)/i,
-        /(?:subscribers|subscriber)[^0-9]{0,30}([\d.,]+[KMB]?)/i
+        /(?:subscribers|subscriber)[^0-9]{0,30}([\d.,]+[KMB]?)/i,
+        /([\d.,]+[KMB]?)\s*(?:friends|friend)/i,
+        /(?:friends|friend)[^0-9]{0,30}([\d.,]+[KMB]?)/i,
+        /([\d.,]+[KMB]?)\s*(?:connections|connection)/i,
+        /(?:connections|connection)[^0-9]{0,30}([\d.,]+[KMB]?)/i,
+        /([\d.,]+[KMB]?)\s*(?:members|member)/i,
+        /(?:members|member)[^0-9]{0,30}([\d.,]+[KMB]?)/i
     ];
 
     const viewPatterns = [
         /([\d.,]+[KMB]?)\s*(?:views|view)/i,
-        /(?:views|view)[^0-9]{0,30}([\d.,]+[KMB]?)/i
+        /(?:views|view)[^0-9]{0,30}([\d.,]+[KMB]?)/i,
+        /([\d.,]+[KMB]?)\s*(?:impressions|impression)/i
     ];
 
     const likePatterns = [
@@ -1014,7 +1037,9 @@ function extractPublicMetrics(
 
     const postPatterns = [
         /([\d.,]+[KMB]?)\s*(?:posts|post)/i,
-        /([\d.,]+[KMB]?)\s*(?:videos|video)/i
+        /([\d.,]+[KMB]?)\s*(?:videos|video)/i,
+        /([\d.,]+[KMB]?)\s*(?:articles|article)/i,
+        /([\d.,]+[KMB]?)\s*(?:media|photos|photo)/i
     ];
 
     function patternValue(
@@ -1072,19 +1097,25 @@ function extractPublicMetrics(
 
     /*
      * Platform-specific JSON strings commonly used in public pages.
+     * Added more variations.
      */
     const followerJsonPatterns = [
         /"followerCount"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
         /"followers_count"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
         /"followers"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
         /"subscriberCount"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
-        /"subscriber_count"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i
+        /"subscriber_count"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
+        /"friends"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
+        /"connections"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
+        /"members"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
+        /"fan_count"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i
     ];
 
     const viewJsonPatterns = [
         /"viewCount"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
         /"view_count"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
-        /"views"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i
+        /"views"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
+        /"impressionCount"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i
     ];
 
     const likeJsonPatterns = [
@@ -1097,7 +1128,9 @@ function extractPublicMetrics(
         /"videoCount"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
         /"video_count"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
         /"postCount"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
-        /"media_count"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i
+        /"media_count"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
+        /"mediaCount"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
+        /"articleCount"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i
     ];
 
     function regexMetric(
@@ -1154,11 +1187,14 @@ function extractPublicMetrics(
     }
 
     /*
-     * YouTube has particularly useful public structured data.
+     * Platform-specific additions:
+     * - YouTube: subscriberCountText and videoCountText
+     * - Instagram: __additionalDataLoaded, window._sharedData
+     * - Facebook: friends count in JSON
+     * - LinkedIn: followerCount, connections
      */
-    if (
-        platform === 'youtube'
-    ) {
+
+    if (platform === 'youtube') {
         const subscriberMatch =
             html.match(
                 /"subscriberCountText"[\s\S]{0,500}?"simpleText"\s*:\s*"([^"]+)"/i
@@ -1187,6 +1223,197 @@ function extractPublicMetrics(
                 parseMetric(
                     videoCountMatch[1]
                 );
+        }
+    }
+
+    if (platform === 'instagram') {
+        // Try to extract from __additionalDataLoaded
+        const additionalMatch =
+            html.match(
+                /__additionalDataLoaded\s*\(\s*[^)]+\s*\)\s*;\s*({.+?})<\/script>/i
+            );
+        if (additionalMatch) {
+            try {
+                const data =
+                    JSON.parse(
+                        additionalMatch[1]
+                    );
+                const user =
+                    data?.graphql?.user ||
+                    data?.user;
+                if (user) {
+                    if (!followers) {
+                        followers =
+                            toNumber(
+                                user.follower_count
+                            );
+                    }
+                    if (!posts) {
+                        posts =
+                            toNumber(
+                                user.media_count
+                            );
+                    }
+                    if (!likes) {
+                        // may not exist
+                    }
+                }
+            } catch (e) { /* ignore */ }
+        }
+
+        // Also look for edge_followed_by
+        const edgeFollowMatch =
+            html.match(
+                /"edge_followed_by"\s*:\s*\{\s*"count"\s*:\s*(\d+)/i
+            );
+        if (edgeFollowMatch && !followers) {
+            followers =
+                parseMetric(
+                    edgeFollowMatch[1]
+                );
+        }
+
+        const edgeMediaMatch =
+            html.match(
+                /"edge_owner_to_timeline_media"\s*:\s*\{\s*"count"\s*:\s*(\d+)/i
+            );
+        if (edgeMediaMatch && !posts) {
+            posts =
+                parseMetric(
+                    edgeMediaMatch[1]
+                );
+        }
+    }
+
+    if (platform === 'facebook') {
+        // Look for friends count
+        if (!followers) {
+            const friendsMatch =
+                html.match(
+                    /"friends"\s*:\s*\{\s*"count"\s*:\s*(\d+)/i
+                );
+            if (friendsMatch) {
+                followers =
+                    parseMetric(
+                        friendsMatch[1]
+                    );
+            }
+        }
+        if (!followers) {
+            const friendsCountMatch =
+                html.match(
+                    /"friends_count"\s*:\s*(\d+)/i
+                );
+            if (friendsCountMatch) {
+                followers =
+                    parseMetric(
+                        friendsCountMatch[1]
+                    );
+            }
+        }
+        // Also check for fan_count
+        if (!followers) {
+            const fanMatch =
+                html.match(
+                    /"fan_count"\s*:\s*(\d+)/i
+                );
+            if (fanMatch) {
+                followers =
+                    parseMetric(
+                        fanMatch[1]
+                    );
+            }
+        }
+    }
+
+    if (platform === 'linkedin') {
+        // Look for followerCount, followersCount, connections
+        if (!followers) {
+            const followerCountMatch =
+                html.match(
+                    /"followerCount"\s*:\s*(\d+)/i
+                );
+            if (followerCountMatch) {
+                followers =
+                    parseMetric(
+                        followerCountMatch[1]
+                    );
+            }
+        }
+        if (!followers) {
+            const followersCountMatch =
+                html.match(
+                    /"followersCount"\s*:\s*(\d+)/i
+                );
+            if (followersCountMatch) {
+                followers =
+                    parseMetric(
+                        followersCountMatch[1]
+                    );
+            }
+        }
+        if (!followers) {
+            const connectionsMatch =
+                html.match(
+                    /"connections"\s*:\s*(\d+)/i
+                );
+            if (connectionsMatch) {
+                followers =
+                    parseMetric(
+                        connectionsMatch[1]
+                    );
+            }
+        }
+        // Also look for data-followers-count attribute
+        if (!followers) {
+            const dataFollowers =
+                html.match(
+                    /data-followers-count\s*=\s*["'](\d+)["']/i
+                );
+            if (dataFollowers) {
+                followers =
+                    parseMetric(
+                        dataFollowers[1]
+                    );
+            }
+        }
+        // Impressions
+        if (!views) {
+            const impMatch =
+                html.match(
+                    /"impressionCount"\s*:\s*(\d+)/i
+                );
+            if (impMatch) {
+                views =
+                    parseMetric(
+                        impMatch[1]
+                    );
+            }
+        }
+        // Posts/articles
+        if (!posts) {
+            const updateMatch =
+                html.match(
+                    /"updateCount"\s*:\s*(\d+)/i
+                );
+            if (updateMatch) {
+                posts =
+                    parseMetric(
+                        updateMatch[1]
+                    );
+            }
+        }
+        if (!posts) {
+            const articlesMatch =
+                html.match(
+                    /"articles"\s*:\s*(\d+)/i
+                );
+            if (articlesMatch) {
+                posts =
+                    parseMetric(
+                        articlesMatch[1]
+                    );
+            }
         }
     }
 
@@ -1475,6 +1702,10 @@ function parseInstagramUsername(
     }
 }
 
+/* ============================================================================
+   LINKEDIN URL PARSER – NOW ACCEPTS ANY LINKEDIN URL
+============================================================================ */
+
 function parseLinkedInOrg(
     rawUrl
 ) {
@@ -1482,15 +1713,44 @@ function parseLinkedInOrg(
         const u =
             new URL(rawUrl);
 
-        const match =
-            u.pathname.match(
-                /^\/company\/([^/?&#]+)/i
-            );
+        // Extract the path segments
+        const pathSegments =
+            u.pathname
+                .replace(/^\/+|\/+$/g, '')
+                .split('/')
+                .filter(Boolean);
 
-        return match
-            ? match[1]
-            : null;
+        // Look for typical LinkedIn profile identifiers:
+        // - /company/{vanity}
+        // - /in/{vanity}
+        // - /pub/{vanity}
+        // - /school/{vanity}
+        // - or just the first segment if it's not a reserved word
+        const reserved = [
+            'feed', 'jobs', 'learning', 'login', 'signup',
+            'search', 'directory', 'groups', 'events',
+            'messaging', 'network', 'notifications', 'profile'
+        ];
 
+        for (let i = 0; i < pathSegments.length; i++) {
+            const segment = pathSegments[i].toLowerCase();
+            if (['company', 'in', 'pub', 'school'].includes(segment)) {
+                const vanity = pathSegments[i + 1];
+                if (vanity && !reserved.includes(vanity.toLowerCase())) {
+                    return vanity;
+                }
+            }
+        }
+
+        // If no known prefix, take the first non‑reserved segment as vanity
+        if (pathSegments.length > 0) {
+            const first = pathSegments[0];
+            if (!reserved.includes(first.toLowerCase())) {
+                return first;
+            }
+        }
+
+        return null;
     } catch {
         return null;
     }
@@ -2455,187 +2715,190 @@ async function fetchInstagram(
 }
 
 /* ============================================================================
-   LINKEDIN
+   LINKEDIN – NOW WORKS FOR ANY PUBLIC LINKEDIN URL
 ============================================================================ */
 
 async function fetchLinkedIn(
     profileUrl,
     accessToken
 ) {
+    // We no longer require a vanity; we just attempt to parse it for API calls.
     const vanity =
         parseLinkedInOrg(
             profileUrl
         );
 
-    if (!vanity) {
-        return {
-            status: 'invalid_url',
-            error:
-                'Expected LinkedIn company URL such as https://www.linkedin.com/company/company-name/'
-        };
-    }
+    // If we have a token and a vanity, try the official API (company only).
+    // For personal profiles, the public URL fallback is used.
+    if (accessToken && vanity) {
+        try {
+            const headers = {
+                Authorization:
+                    `Bearer ${accessToken}`,
 
-    if (accessToken) {
-        const headers = {
-            Authorization:
-                `Bearer ${accessToken}`,
+                'LinkedIn-Version':
+                    LINKEDIN_VERSION,
 
-            'LinkedIn-Version':
-                LINKEDIN_VERSION,
+                'X-Restli-Protocol-Version':
+                    '2.0.0',
 
-            'X-Restli-Protocol-Version':
-                '2.0.0',
+                Accept:
+                    'application/json'
+            };
 
-            Accept:
-                'application/json'
-        };
+            // Try company endpoint first
+            const endpoint =
+                `https://api.linkedin.com/rest/organizations` +
+                `?q=vanityName` +
+                `&vanityName=${encodeURIComponent(vanity)}`;
 
-        const endpoint =
-            `https://api.linkedin.com/rest/organizations` +
-            `?q=vanityName` +
-            `&vanityName=${encodeURIComponent(vanity)}`;
+            const response =
+                await apiGet(
+                    endpoint,
+                    headers
+                );
 
-        const response =
-            await apiGet(
-                endpoint,
-                headers
-            );
+            if (
+                response.status === 200
+            ) {
+                const organization =
+                    response.body
+                        ?.elements?.[0];
 
-        if (
-            response.status === 200
-        ) {
-            const organization =
-                response.body
-                    ?.elements?.[0];
+                if (organization) {
+                    const orgId =
+                        organization.id;
 
-            if (organization) {
-                const orgId =
-                    organization.id;
+                    let followers = 0;
 
-                let followers = 0;
+                    /*
+                     * Attempt follower information.
+                     */
+                    const followerEndpoint =
+                        `https://api.linkedin.com/v2/networkSizes/` +
+                        `urn%3Ali%3Aorganization%3A${encodeURIComponent(orgId)}` +
+                        `?edgeType=CompanyFollowedByMember`;
 
-                /*
-                 * Attempt follower information.
-                 */
-                const followerEndpoint =
-                    `https://api.linkedin.com/v2/networkSizes/` +
-                    `urn%3Ali%3Aorganization%3A${encodeURIComponent(orgId)}` +
-                    `?edgeType=CompanyFollowedByMember`;
-
-                const followerResponse =
-                    await apiGet(
-                        followerEndpoint,
-                        headers
-                    );
-
-                if (
-                    followerResponse.status === 200
-                ) {
-                    followers =
-                        toNumber(
-                            followerResponse.body
-                                ?.firstDegreeSize
+                    const followerResponse =
+                        await apiGet(
+                            followerEndpoint,
+                            headers
                         );
-                }
 
-                let views = 0;
-                let likes = 0;
-                let posts = 0;
-                let comments = 0;
-                let shares = 0;
-
-                const organizationUrn =
-                    `urn:li:organization:${orgId}`;
-
-                const statsEndpoint =
-                    `https://api.linkedin.com/rest/organizationalEntityShareStatistics` +
-                    `?q=organizationalEntity` +
-                    `&organizationalEntity=${encodeURIComponent(
-                        organizationUrn
-                    )}`;
-
-                const statsResponse =
-                    await apiGet(
-                        statsEndpoint,
-                        headers
-                    );
-
-                if (
-                    statsResponse.status === 200
-                ) {
-                    const elements =
-                        statsResponse.body
-                            ?.elements || [];
-
-                    posts =
-                        elements.length;
-
-                    for (
-                        const element
-                        of elements
+                    if (
+                        followerResponse.status === 200
                     ) {
-                        const stats =
-                            element.totalShareStatistics ||
-                            {};
-
-                        views +=
+                        followers =
                             toNumber(
-                                stats.impressionCount
-                            );
-
-                        likes +=
-                            toNumber(
-                                stats.likeCount
-                            );
-
-                        comments +=
-                            toNumber(
-                                stats.commentCount
-                            );
-
-                        shares +=
-                            toNumber(
-                                stats.shareCount
+                                followerResponse.body
+                                    ?.firstDegreeSize
                             );
                     }
+
+                    let views = 0;
+                    let likes = 0;
+                    let posts = 0;
+                    let comments = 0;
+                    let shares = 0;
+
+                    const organizationUrn =
+                        `urn:li:organization:${orgId}`;
+
+                    const statsEndpoint =
+                        `https://api.linkedin.com/rest/organizationalEntityShareStatistics` +
+                        `?q=organizationalEntity` +
+                        `&organizationalEntity=${encodeURIComponent(
+                            organizationUrn
+                        )}`;
+
+                    const statsResponse =
+                        await apiGet(
+                            statsEndpoint,
+                            headers
+                        );
+
+                    if (
+                        statsResponse.status === 200
+                    ) {
+                        const elements =
+                            statsResponse.body
+                                ?.elements || [];
+
+                        posts =
+                            elements.length;
+
+                        for (
+                            const element
+                            of elements
+                        ) {
+                            const stats =
+                                element.totalShareStatistics ||
+                                {};
+
+                            views +=
+                                toNumber(
+                                    stats.impressionCount
+                                );
+
+                            likes +=
+                                toNumber(
+                                    stats.likeCount
+                                );
+
+                            comments +=
+                                toNumber(
+                                    stats.commentCount
+                                );
+
+                            shares +=
+                                toNumber(
+                                    stats.shareCount
+                                );
+                        }
+                    }
+
+                    const interactions =
+                        likes +
+                        comments +
+                        shares;
+
+                    return {
+                        status: 'ok',
+                        source: 'linkedin_api',
+
+                        name:
+                            organization.localizedName ||
+                            organization.vanityName ||
+                            vanity,
+
+                        followers,
+                        views,
+                        likes,
+                        posts,
+
+                        engagement:
+                            views > 0
+                                ? round(
+                                    (
+                                        interactions /
+                                        views
+                                    ) * 100,
+                                    2
+                                )
+                                : 0
+                    };
                 }
-
-                const interactions =
-                    likes +
-                    comments +
-                    shares;
-
-                return {
-                    status: 'ok',
-                    source: 'linkedin_api',
-
-                    name:
-                        organization.localizedName ||
-                        organization.vanityName ||
-                        vanity,
-
-                    followers,
-                    views,
-                    likes,
-                    posts,
-
-                    engagement:
-                        views > 0
-                            ? round(
-                                (
-                                    interactions /
-                                    views
-                                ) * 100,
-                                2
-                            )
-                            : 0
-                };
             }
+        } catch (err) {
+            console.error(
+                '[LinkedIn] API error:',
+                err?.message || err
+            );
         }
     }
 
     /*
-     * Public URL fallback.
+     * Public URL fallback – works for ANY LinkedIn URL (personal, company, etc.)
      */
     const page =
         await fetchPublicPage(
@@ -2648,7 +2911,7 @@ async function fetchLinkedIn(
             source: 'public_url',
             error:
                 page.error ||
-                'Could not retrieve LinkedIn company URL'
+                'Could not retrieve LinkedIn URL'
         };
     }
 
@@ -2657,6 +2920,11 @@ async function fetchLinkedIn(
             page.html,
             'linkedin'
         );
+
+    // Use vanity as fallback name, or just "LinkedIn Profile"
+    const fallbackName =
+        vanity ||
+        'LinkedIn Profile';
 
     if (
         !metrics.followers &&
@@ -2670,7 +2938,7 @@ async function fetchLinkedIn(
 
             name:
                 metrics.name ||
-                vanity,
+                fallbackName,
 
             followers: 0,
             views: 0,
@@ -2679,7 +2947,7 @@ async function fetchLinkedIn(
             engagement: 0,
 
             error:
-                'LinkedIn loaded the company URL, but company statistics were not publicly exposed. Add LINKEDIN_TOKEN for API statistics.'
+                'LinkedIn loaded the URL, but no public statistics were found. They may require login.'
         };
     }
 
@@ -2689,7 +2957,7 @@ async function fetchLinkedIn(
 
         name:
             metrics.name ||
-            vanity,
+            fallbackName,
 
         followers:
             metrics.followers,
@@ -3006,10 +3274,10 @@ app.get(
                 'Kiwami Marketing System API',
 
             version:
-                '3.0.0',
+                '3.1.0',
 
             analytics:
-                'URL retrieval + official API fallback',
+                'URL retrieval + official API fallback (enhanced extraction)',
 
             timestamp:
                 new Date().toISOString()
@@ -4149,7 +4417,7 @@ app.listen(
     () => {
         console.log('');
         console.log(
-            '🚀 Kiwami Marketing System – API Server'
+            '🚀 Kiwami Marketing System – API Server (Enhanced)'
         );
 
         console.log(
@@ -4169,7 +4437,7 @@ app.listen(
         );
 
         console.log(
-            '   Analytics:   URL retrieval enabled'
+            '   Analytics:   Enhanced extraction (friends, connections, members)'
         );
 
         console.log(
