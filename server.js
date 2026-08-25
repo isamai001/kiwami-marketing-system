@@ -2028,48 +2028,77 @@ function parseInstagramUsername(
     }
 }
 
-function parseLinkedInOrg(
-    rawUrl
-) {
-    try {
-        const u =
-            new URL(rawUrl);
+function parseLinkedInOrg(profileUrl) {
+    if (!profileUrl || typeof profileUrl !== 'string') {
+        return null;
+    }
 
-        const match =
-            u.pathname.match(
-                /^\/company\/([^/?&#]+)/i
+    try {
+        const url = new URL(profileUrl.trim());
+
+        const hostname =
+            url.hostname
+                .toLowerCase()
+                .replace(/^www\./, '');
+
+        if (hostname !== 'linkedin.com') {
+            return null;
+        }
+
+        const parts =
+            url.pathname
+                .split('/')
+                .filter(Boolean);
+
+        /*
+         * Expected:
+         *
+         * /company/company-name/
+         *
+         * Also tolerate:
+         *
+         * /company/company-name/about/
+         * /company/company-name/posts/
+         * /company/company-name/life/
+         */
+
+        const companyIndex =
+            parts.findIndex(
+                part =>
+                    part.toLowerCase() === 'company'
             );
 
-        return match
-            ? match[1]
-            : null;
+        if (companyIndex === -1) {
+            return null;
+        }
 
-    } catch {
+        const vanity =
+            parts[companyIndex + 1];
+
+        if (!vanity) {
+            return null;
+        }
+
+        /*
+         * Remove accidental query/hash characters
+         * and decode URL encoding.
+         */
+        return decodeURIComponent(
+            vanity
+                .split('?')[0]
+                .split('#')[0]
+                .trim()
+        );
+
+    } catch (err) {
+        console.error(
+            '[LinkedIn] URL parse error:',
+            err?.message || err
+        );
+
         return null;
     }
 }
-
-function parseTikTokUsername(
-    rawUrl
-) {
-    try {
-        const u =
-            new URL(rawUrl);
-
-        const match =
-            u.pathname.match(
-                /^\/@([^/?&#]+)/i
-            );
-
-        return match
-            ? match[1]
-            : null;
-
-    } catch {
-        return null;
-    }
-}
-
 /* ============================================================================
    YOUTUBE
 ============================================================================ */
