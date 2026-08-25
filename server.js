@@ -2029,70 +2029,86 @@ function parseInstagramUsername(
 }
 
 function parseLinkedInOrg(profileUrl) {
+    console.log('================================');
+    console.log('[LinkedIn DEBUG] RAW URL:', profileUrl);
+    console.log('[LinkedIn DEBUG] TYPE:', typeof profileUrl);
+
     if (!profileUrl || typeof profileUrl !== 'string') {
+        console.log('[LinkedIn DEBUG] URL is empty or not a string');
         return null;
     }
 
+    const cleaned =
+        profileUrl.trim();
+
+    console.log(
+        '[LinkedIn DEBUG] CLEANED URL:',
+        cleaned
+    );
+
     try {
-        const url = new URL(profileUrl.trim());
+        const url =
+            new URL(cleaned);
 
-        const hostname =
+        console.log(
+            '[LinkedIn DEBUG] HOST:',
             url.hostname
-                .toLowerCase()
-                .replace(/^www\./, '');
+        );
 
-        if (hostname !== 'linkedin.com') {
-            return null;
-        }
+        console.log(
+            '[LinkedIn DEBUG] PATH:',
+            url.pathname
+        );
 
         const parts =
             url.pathname
                 .split('/')
                 .filter(Boolean);
 
-        /*
-         * Expected:
-         *
-         * /company/company-name/
-         *
-         * Also tolerate:
-         *
-         * /company/company-name/about/
-         * /company/company-name/posts/
-         * /company/company-name/life/
-         */
+        console.log(
+            '[LinkedIn DEBUG] PATH PARTS:',
+            parts
+        );
 
         const companyIndex =
             parts.findIndex(
                 part =>
-                    part.toLowerCase() === 'company'
+                    part.toLowerCase() ===
+                    'company'
             );
 
+        console.log(
+            '[LinkedIn DEBUG] COMPANY INDEX:',
+            companyIndex
+        );
+
         if (companyIndex === -1) {
+            console.log(
+                '[LinkedIn DEBUG] No /company/ found'
+            );
+
             return null;
         }
 
         const vanity =
             parts[companyIndex + 1];
 
+        console.log(
+            '[LinkedIn DEBUG] VANITY:',
+            vanity
+        );
+
         if (!vanity) {
             return null;
         }
 
-        /*
-         * Remove accidental query/hash characters
-         * and decode URL encoding.
-         */
         return decodeURIComponent(
             vanity
-                .split('?')[0]
-                .split('#')[0]
-                .trim()
         );
 
     } catch (err) {
         console.error(
-            '[LinkedIn] URL parse error:',
+            '[LinkedIn DEBUG] URL ERROR:',
             err?.message || err
         );
 
