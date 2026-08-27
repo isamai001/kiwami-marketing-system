@@ -1958,214 +1958,291 @@ async function fetchTwitter(
 }
 
 /* ============================================================================
-   FACEBOOK (MODIFIED)
+   FACEBOOK (DIAGNOSTIC VERSION)
 ============================================================================ */
 
 async function fetchFacebook(
     profileUrl,
     accessToken
 ) {
-    const pageId =
-        parseFacebookId(
-            profileUrl
-        );
-
-    /*
-     * Official Meta API.
-     */
-    if (
-        accessToken &&
-        pageId
-    ) {
-        const fields = [
-            'id',
-            'name',
-            'followers_count',
-            'fan_count'
-        ].join(',');
-
-        const endpoint =
-            `https://graph.facebook.com/v23.0/` +
-            `${encodeURIComponent(pageId)}` +
-            `?fields=${encodeURIComponent(fields)}` +
-            `&access_token=${encodeURIComponent(accessToken)}`;
-
-        const response =
-            await apiGet(
-                endpoint
+    try {
+        const pageId =
+            parseFacebookId(
+                profileUrl
             );
 
+        /*
+         * Official Meta API.
+         */
         if (
-            response.status === 200 &&
-            response.body
+            accessToken &&
+            pageId
         ) {
-            const page =
-                response.body;
+            try {
+                const fields = [
+                    'id',
+                    'name',
+                    'followers_count',
+                    'fan_count'
+                ].join(',');
 
-            const followers =
-                toNumber(
-                    page.followers_count ||
-                    page.fan_count
-                );
+                const endpoint =
+                    `https://graph.facebook.com/v23.0/` +
+                    `${encodeURIComponent(pageId)}` +
+                    `?fields=${encodeURIComponent(fields)}` +
+                    `&access_token=${encodeURIComponent(accessToken)}`;
 
-            let likes = 0;
-            let comments = 0;
-            let posts = 0;
+                const response =
+                    await apiGet(
+                        endpoint
+                    );
 
-            const postsEndpoint =
-                `https://graph.facebook.com/v23.0/` +
-                `${encodeURIComponent(page.id || pageId)}` +
-                `/posts?fields=${encodeURIComponent(
-                    'id,likes.limit(0).summary(true),comments.limit(0).summary(true)'
-                )}` +
-                `&limit=25` +
-                `&access_token=${encodeURIComponent(accessToken)}`;
-
-            const postsResponse =
-                await apiGet(
-                    postsEndpoint
-                );
-
-            if (
-                postsResponse.status === 200
-            ) {
-                const items =
-                    postsResponse.body?.data ||
-                    [];
-
-                posts =
-                    items.length;
-
-                for (
-                    const post
-                    of items
+                if (
+                    response.status === 200 &&
+                    response.body
                 ) {
-                    likes +=
+                    const page =
+                        response.body;
+
+                    const followers =
                         toNumber(
-                            post.likes
-                                ?.summary
-                                ?.total_count
+                            page.followers_count ||
+                            page.fan_count
                         );
 
-                    comments +=
-                        toNumber(
-                            post.comments
-                                ?.summary
-                                ?.total_count
-                        );
+                    let likes = 0;
+                    let comments = 0;
+                    let posts = 0;
+
+                    try {
+                        const postsEndpoint =
+                            `https://graph.facebook.com/v23.0/` +
+                            `${encodeURIComponent(page.id || pageId)}` +
+                            `/posts?fields=${encodeURIComponent(
+                                'id,likes.limit(0).summary(true),comments.limit(0).summary(true)'
+                            )}` +
+                            `&limit=25` +
+                            `&access_token=${encodeURIComponent(accessToken)}`;
+
+                        const postsResponse =
+                            await apiGet(
+                                postsEndpoint
+                            );
+
+                        if (
+                            postsResponse.status === 200
+                        ) {
+                            const items =
+                                postsResponse.body?.data ||
+                                [];
+
+                            posts =
+                                items.length;
+
+                            for (
+                                const post
+                                of items
+                            ) {
+                                likes +=
+                                    toNumber(
+                                        post.likes
+                                            ?.summary
+                                            ?.total_count
+                                    );
+
+                                comments +=
+                                    toNumber(
+                                        post.comments
+                                            ?.summary
+                                            ?.total_count
+                                    );
+                            }
+                        } else {
+                            // Posts fetch failed – we'll still return page info
+                            console.warn(`[Facebook] Posts fetch failed for page ${pageId}, status ${postsResponse.status}`);
+                            posts = -1;
+                        }
+                    } catch (postsErr) {
+                        console.error(`[Facebook] Posts fetch exception:`, postsErr.message);
+                        posts = -1;
+                    }
+
+                    const interactions =
+                        likes + comments;
+
+                    return {
+                        status: 'ok',
+                        source: 'meta_api',
+
+                        name:
+                            page.name ||
+                            'Facebook Page',
+
+                        followers,
+                        views: 0,
+                        likes,
+                        posts: posts === -1 ? -1 : posts,
+                        posts_available: posts !== -1,
+
+                        engagement:
+                            followers > 0 &&
+                            posts > 0
+                                ? round(
+                                    (
+                                        interactions /
+                                        posts /
+                                        followers
+                                    ) * 100,
+                                    2
+                                )
+                                : 0
+                    };
+                } else {
+                    // API call returned non-200
+                    const errorMsg = response.body?.error?.message || 'No error message';
+                    console.warn(`[Facebook] Meta API returned status ${response.status}: ${errorMsg}`);
+                    // Fall through to public extraction
                 }
+            } catch (apiErr) {
+                console.error(`[Facebook] Meta API exception:`, apiErr.message);
+                // Fall through to public extraction
+            }
+        }
+
+        /*
+         * Public URL fallback (with diagnostics).
+         */
+        try {
+            const page =
+                await fetchPublicPage(
+                    profileUrl
+                );
+
+            if (!page.ok) {
+                return {
+                    status: 'diagnostic_error',
+                    source: 'public_url',
+                    step: 'fetchPublicPage',
+                    http_status: page.status || 0,
+                    error: page.error || 'Failed to retrieve Facebook public page',
+                    name: 'Facebook Page',
+                    followers: 0,
+                    views: 0,
+                    likes: 0,
+                    posts: -1,
+                    posts_available: false,
+                    engagement: 0
+                };
             }
 
-            const interactions =
-                likes + comments;
+            try {
+                const metrics =
+                    extractPublicMetrics(
+                        page.html,
+                        'facebook'
+                    );
 
+                if (
+                    !metrics.followers &&
+                    !metrics.likes &&
+                    !metrics.posts
+                ) {
+                    return {
+                        status: 'partial',
+                        source: 'public_url',
+                        name: metrics.name || 'Facebook Page',
+                        followers: 0,
+                        views: 0,
+                        likes: 0,
+                        posts: -1,
+                        posts_available: false,
+                        engagement: 0
+                    };
+                }
+
+                return {
+                    status: 'ok',
+                    source: 'public_url',
+
+                    name:
+                        metrics.name ||
+                        'Facebook Page',
+
+                    followers:
+                        metrics.followers,
+
+                    views:
+                        metrics.views,
+
+                    likes:
+                        metrics.likes,
+
+                    posts:
+                        metrics.posts,
+
+                    posts_available: true,
+
+                    engagement:
+                        metrics.followers > 0 &&
+                        metrics.posts > 0
+                            ? round(
+                                (
+                                    metrics.likes /
+                                    metrics.posts /
+                                    metrics.followers
+                                ) * 100,
+                                2
+                            )
+                            : 0
+                };
+            } catch (extractErr) {
+                console.error(`[Facebook] extractPublicMetrics exception:`, extractErr.message);
+                return {
+                    status: 'diagnostic_error',
+                    source: 'public_url',
+                    step: 'extractPublicMetrics',
+                    error: extractErr.message || 'Failed to extract metrics from public HTML',
+                    name: 'Facebook Page',
+                    followers: 0,
+                    views: 0,
+                    likes: 0,
+                    posts: -1,
+                    posts_available: false,
+                    engagement: 0
+                };
+            }
+        } catch (publicErr) {
+            console.error(`[Facebook] Public fetch fallback exception:`, publicErr.message);
             return {
-                status: 'ok',
-                source: 'meta_api',
-
-                name:
-                    page.name ||
-                    'Facebook Page',
-
-                followers,
+                status: 'diagnostic_error',
+                source: 'public_url',
+                step: 'fetchPublicPage',
+                error: publicErr.message || 'Failed to fetch public Facebook page',
+                name: 'Facebook Page',
+                followers: 0,
                 views: 0,
-                likes,
-                posts,
-
-                engagement:
-                    followers > 0 &&
-                    posts > 0
-                        ? round(
-                            (
-                                interactions /
-                                posts /
-                                followers
-                            ) * 100,
-                            2
-                        )
-                        : 0
+                likes: 0,
+                posts: -1,
+                posts_available: false,
+                engagement: 0
             };
         }
-    }
-
-    /*
-     * Public URL fallback (modified: no error message).
-     */
-    const page =
-        await fetchPublicPage(
-            profileUrl
-        );
-
-    if (!page.ok) {
+    } catch (generalErr) {
+        console.error(`[Facebook] Unhandled exception:`, generalErr.message);
         return {
-            status: 'unavailable',
-            source: 'public_url',
-            error:
-                page.error ||
-                'Could not retrieve Facebook URL'
-        };
-    }
-
-    const metrics =
-        extractPublicMetrics(
-            page.html,
-            'facebook'
-        );
-
-    if (
-        !metrics.followers &&
-        !metrics.likes &&
-        !metrics.posts
-    ) {
-        return {
-            status: 'partial',
-            source: 'public_url',
-            name: metrics.name || 'Facebook Page',
+            status: 'diagnostic_error',
+            source: 'unknown',
+            step: 'general',
+            error: generalErr.message || 'Unknown Facebook error',
+            name: 'Facebook Page',
             followers: 0,
             views: 0,
             likes: 0,
-            posts: -1,          // -1 indicates “unavailable”
+            posts: -1,
             posts_available: false,
             engagement: 0
-            // No error field – the frontend can treat posts:-1 as “no data”
         };
     }
-
-    return {
-        status: 'ok',
-        source: 'public_url',
-
-        name:
-            metrics.name ||
-            'Facebook Page',
-
-        followers:
-            metrics.followers,
-
-        views:
-            metrics.views,
-
-        likes:
-            metrics.likes,
-
-        posts:
-            metrics.posts,
-
-        posts_available: true,
-
-        engagement:
-            metrics.followers > 0 &&
-            metrics.posts > 0
-                ? round(
-                    (
-                        metrics.likes /
-                        metrics.posts /
-                        metrics.followers
-                    ) * 100,
-                    2
-                )
-                : 0
-    };
 }
 
 /* ============================================================================
@@ -2680,7 +2757,6 @@ async function fetchLinkedIn(
             likes: 0,
             posts: -1,          // unavailable
             engagement: 0
-            // No error message
         };
     }
 
