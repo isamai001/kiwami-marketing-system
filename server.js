@@ -1517,6 +1517,7 @@ function parseTikTokUsername(
     }
 }
 
+
 /* ============================================================================
    YOUTUBE
 ============================================================================ */
@@ -1957,7 +1958,7 @@ async function fetchTwitter(
 }
 
 /* ============================================================================
-   FACEBOOK
+   FACEBOOK (MODIFIED)
 ============================================================================ */
 
 async function fetchFacebook(
@@ -2088,7 +2089,7 @@ async function fetchFacebook(
     }
 
     /*
-     * Public URL fallback.
+     * Public URL fallback (modified: no error message).
      */
     const page =
         await fetchPublicPage(
@@ -2119,19 +2120,14 @@ async function fetchFacebook(
         return {
             status: 'partial',
             source: 'public_url',
-
-            name:
-                metrics.name ||
-                'Facebook Page',
-
+            name: metrics.name || 'Facebook Page',
             followers: 0,
             views: 0,
             likes: 0,
-            posts: 0,
-            engagement: 0,
-
-            error:
-                'Facebook loaded the public URL, but reliable page statistics were not publicly exposed. Add FB_TOKEN for reliable page statistics.'
+            posts: -1,          // -1 indicates “unavailable”
+            posts_available: false,
+            engagement: 0
+            // No error field – the frontend can treat posts:-1 as “no data”
         };
     }
 
@@ -2154,6 +2150,8 @@ async function fetchFacebook(
 
         posts:
             metrics.posts,
+
+        posts_available: true,
 
         engagement:
             metrics.followers > 0 &&
@@ -2455,27 +2453,35 @@ async function fetchInstagram(
 }
 
 /* ============================================================================
-   LINKEDIN
+   LINKEDIN (MODIFIED)
 ============================================================================ */
 
 async function fetchLinkedIn(
     profileUrl,
     accessToken
 ) {
-    const vanity =
-        parseLinkedInOrg(
-            profileUrl
-        );
-
-    if (!vanity) {
-        return {
-            status: 'invalid_url',
-            error:
-                'Expected LinkedIn company URL such as https://www.linkedin.com/company/company-name/'
-        };
+    // Try to extract a company/organization identifier from various URL patterns
+    let vanity = null;
+    try {
+        const u = new URL(profileUrl);
+        const pathSegments = u.pathname.replace(/^\/+|\/+$/g, '').split('/');
+        // Try common patterns: /company/name, /in/name, or just the first segment
+        if (pathSegments.length >= 2 && pathSegments[0].toLowerCase() === 'company') {
+            vanity = pathSegments[1];
+        } else if (pathSegments.length >= 2 && pathSegments[0].toLowerCase() === 'in') {
+            // For personal profiles, we might still try to fetch public page
+            vanity = pathSegments[1];
+        } else if (pathSegments.length === 1 && pathSegments[0]) {
+            vanity = pathSegments[0];
+        }
+    } catch {
+        // fall through to public fetch
     }
 
-    if (accessToken) {
+    /*
+     * Official LinkedIn API (only if a vanity name is found and token exists).
+     */
+    if (accessToken && vanity) {
         const headers = {
             Authorization:
                 `Bearer ${accessToken}`,
@@ -2635,7 +2641,7 @@ async function fetchLinkedIn(
     }
 
     /*
-     * Public URL fallback.
+     * Public URL fallback (now always attempted, regardless of vanity detection).
      */
     const page =
         await fetchPublicPage(
@@ -2648,7 +2654,7 @@ async function fetchLinkedIn(
             source: 'public_url',
             error:
                 page.error ||
-                'Could not retrieve LinkedIn company URL'
+                'Could not retrieve LinkedIn URL'
         };
     }
 
@@ -2658,6 +2664,7 @@ async function fetchLinkedIn(
             'linkedin'
         );
 
+    // Return whatever we found, even if incomplete – no strict URL error
     if (
         !metrics.followers &&
         !metrics.likes &&
@@ -2667,19 +2674,13 @@ async function fetchLinkedIn(
         return {
             status: 'partial',
             source: 'public_url',
-
-            name:
-                metrics.name ||
-                vanity,
-
+            name: metrics.name || 'LinkedIn Profile',
             followers: 0,
             views: 0,
             likes: 0,
-            posts: 0,
-            engagement: 0,
-
-            error:
-                'LinkedIn loaded the company URL, but company statistics were not publicly exposed. Add LINKEDIN_TOKEN for API statistics.'
+            posts: -1,          // unavailable
+            engagement: 0
+            // No error message
         };
     }
 
@@ -2689,7 +2690,7 @@ async function fetchLinkedIn(
 
         name:
             metrics.name ||
-            vanity,
+            'LinkedIn Profile',
 
         followers:
             metrics.followers,
