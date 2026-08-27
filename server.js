@@ -3714,6 +3714,12 @@ app.post(
                     });
             }
 
+            // ================================================================
+            // TEMPORARY TEST TOKEN - REMOVE AFTER TESTING
+            // ================================================================
+            const TEST_TOKEN = 'EAAU7n3kf1K8BSbJyGex8M0rstlK2AQKn88TEkmmSU8NZAtL4sQPsIkVVW6BDWMoqkGZCSAus3KnzdglyUdsSUwsNEpLdlSofhZAkuvj8THTrSumGQGRizR08qI175XkxpE5QHo3nUgymZAKmBfZAYdn45cuYZCJ3oQZB6JTOSjWSGlAYYmHd8CkJKVQZBWEzZAUcxlM6zds1LektBDUYRkj5SC3dNs7blZB8xgeljhfSXAThhPXRBqzcvuFc0fS6Aj0LTLrYYwihJO20ZAoFB3izsbt1btMHpxSCvjvpnMzVdHiTZBTCkAlZCtea5DKZAQaR3ba16foyKehBZBG7Y6AIAZDZD';
+            // ================================================================
+
             /*
              * Credentials can come from:
              *
@@ -3737,15 +3743,19 @@ app.post(
                         ''
                     ),
 
+                // Override facebook token with TEST_TOKEN for testing
                 facebook:
                     safeToken(
+                        TEST_TOKEN ||  // <-- TEMPORARY: hardcoded token
                         process.env.FB_TOKEN ||
                         apiKeys.facebook ||
                         ''
                     ),
 
+                // Instagram also uses TEST_TOKEN (or falls back to facebook key)
                 instagram:
                     safeToken(
+                        TEST_TOKEN ||  // <-- TEMPORARY: hardcoded token
                         process.env.IG_TOKEN ||
                         apiKeys.instagram ||
                         process.env.FB_TOKEN ||
