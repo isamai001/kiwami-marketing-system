@@ -1517,7 +1517,6 @@ function parseTikTokUsername(
     }
 }
 
-
 /* ============================================================================
    YOUTUBE
 ============================================================================ */
@@ -1956,392 +1955,9 @@ async function fetchTwitter(
                 : 0
     };
 }
+
 /* ============================================================================
-   EXTRA PUBLIC SOCIAL FALLBACK
-   Instagram + Facebook + LinkedIn
-============================================================================ */
-
-async function fetchSocialPublicFallback(profileUrl, platform) {
-    if (!profileUrl) {
-        return null;
-    }
-
-    try {
-        const response = await fetch(profileUrl, {
-            method: 'GET',
-
-            headers: {
-                'User-Agent':
-                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
-                    'AppleWebKit/537.36 (KHTML, like Gecko) ' +
-                    'Chrome/151.0.0.0 Safari/537.36',
-
-                'Accept':
-                    'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-
-                'Accept-Language':
-                    'en-US,en;q=0.9',
-
-                'Cache-Control':
-                    'no-cache'
-            },
-
-            redirect: 'follow'
-        });
-
-        const html = await response.text();
-
-        if (!html || html.length < 100) {
-            return null;
-        }
-
-        /*
-         * ------------------------------------------------------------
-         * Decode HTML entities
-         * ------------------------------------------------------------
-         */
-
-        const clean = html
-            .replace(/\\u0026/g, '&')
-            .replace(/&quot;/g, '"')
-            .replace(/&#34;/g, '"')
-            .replace(/&#39;/g, "'")
-            .replace(/&amp;/g, '&')
-            .replace(/&lt;/g, '<')
-            .replace(/&gt;/g, '>');
-
-        /*
-         * ------------------------------------------------------------
-         * General metadata
-         * ------------------------------------------------------------
-         */
-
-        function getMeta(property) {
-            const patterns = [
-                new RegExp(
-                    `<meta[^>]+property=["']${property}["'][^>]+content=["']([^"']+)["']`,
-                    'i'
-                ),
-
-                new RegExp(
-                    `<meta[^>]+content=["']([^"']+)["'][^>]+property=["']${property}["']`,
-                    'i'
-                ),
-
-                new RegExp(
-                    `<meta[^>]+name=["']${property}["'][^>]+content=["']([^"']+)["']`,
-                    'i'
-                )
-            ];
-
-            for (const pattern of patterns) {
-                const match = clean.match(pattern);
-
-                if (match && match[1]) {
-                    return match[1].trim();
-                }
-            }
-
-            return '';
-        }
-
-        const title =
-            getMeta('og:title') ||
-            getMeta('twitter:title') ||
-            '';
-
-        const description =
-            getMeta('og:description') ||
-            getMeta('description') ||
-            getMeta('twitter:description') ||
-            '';
-
-        const image =
-            getMeta('og:image') ||
-            '';
-
-        /*
-         * ------------------------------------------------------------
-         * Number parser
-         *
-         * Understands:
-         *  1,234
-         *  12.5K
-         *  2.1M
-         *  450 followers
-         * ------------------------------------------------------------
-         */
-
-        function parseNumber(value) {
-            if (!value) {
-                return 0;
-            }
-
-            let text =
-                String(value)
-                    .replace(/,/g, '')
-                    .trim()
-                    .toUpperCase();
-
-            const match =
-                text.match(
-                    /(\d+(?:\.\d+)?)\s*([KMB])?/
-                );
-
-            if (!match) {
-                return 0;
-            }
-
-            let number =
-                parseFloat(match[1]);
-
-            const suffix =
-                match[2];
-
-            if (suffix === 'K') {
-                number *= 1000;
-            }
-
-            if (suffix === 'M') {
-                number *= 1000000;
-            }
-
-            if (suffix === 'B') {
-                number *= 1000000000;
-            }
-
-            return Math.round(number);
-        }
-
-        /*
-         * ------------------------------------------------------------
-         * Search the HTML around specific words.
-         * ------------------------------------------------------------
-         */
-
-        function findNumberAfterWords(words) {
-            for (const word of words) {
-
-                const pattern =
-                    new RegExp(
-                        '(\\d[\\d,.]*\\s*[KMB]?)\\s*' +
-                        word,
-                        'i'
-                    );
-
-                const match =
-                    clean.match(pattern);
-
-                if (match) {
-                    return parseNumber(match[1]);
-                }
-
-                const reversePattern =
-                    new RegExp(
-                        word +
-                        '[^\\d]{0,80}' +
-                        '(\\d[\\d,.]*\\s*[KMB]?)',
-                        'i'
-                    );
-
-                const reverseMatch =
-                    clean.match(reversePattern);
-
-                if (reverseMatch) {
-                    return parseNumber(
-                        reverseMatch[1]
-                    );
-                }
-            }
-
-            return 0;
-        }
-
-        /*
-         * ------------------------------------------------------------
-         * Platform-specific public numbers
-         * ------------------------------------------------------------
-         */
-
-        let followers = 0;
-        let posts = 0;
-        let likes = 0;
-
-        if (platform === 'instagram') {
-
-            followers =
-                findNumberAfterWords([
-                    'followers',
-                    'follower'
-                ]);
-
-            posts =
-                findNumberAfterWords([
-                    'posts',
-                    'post'
-                ]);
-
-        } else if (platform === 'facebook') {
-
-            followers =
-                findNumberAfterWords([
-                    'followers',
-                    'follower',
-                    'people follow this',
-                    'people like this'
-                ]);
-
-            likes =
-                findNumberAfterWords([
-                    'likes',
-                    'like'
-                ]);
-
-        } else if (platform === 'linkedin') {
-
-            followers =
-                findNumberAfterWords([
-                    'followers',
-                    'follower',
-                    'employees'
-                ]);
-
-            /*
-             * LinkedIn sometimes exposes employee count
-             * rather than follower count. We deliberately
-             * DON'T treat employees as followers.
-             */
-
-            if (
-                !followers &&
-                /followers/i.test(clean)
-            ) {
-                followers =
-                    findNumberAfterWords([
-                        'followers',
-                        'follower'
-                    ]);
-            }
-        }
-
-        /*
-         * ------------------------------------------------------------
-         * Try structured JSON as well.
-         * ------------------------------------------------------------
-         */
-
-        const jsonNumberPatterns = [
-            /"followers_count"\s*:\s*(\d+)/i,
-            /"follower_count"\s*:\s*(\d+)/i,
-            /"followers"\s*:\s*(\d+)/i,
-            /"media_count"\s*:\s*(\d+)/i,
-            /"posts_count"\s*:\s*(\d+)/i
-        ];
-
-        for (const pattern of jsonNumberPatterns) {
-            const match =
-                clean.match(pattern);
-
-            if (match) {
-                const value =
-                    parseNumber(match[1]);
-
-                if (!followers && /followers/i.test(pattern.source)) {
-                    followers = value;
-                }
-
-                if (!posts && /media|posts/i.test(pattern.source)) {
-                    posts = value;
-                }
-            }
-        }
-
-        /*
-         * ------------------------------------------------------------
-         * Extract a useful username/title
-         * ------------------------------------------------------------
-         */
-
-        let name = title;
-
-        if (!name) {
-            const titleMatch =
-                clean.match(
-                    /<title[^>]*>([\s\S]*?)<\/title>/i
-                );
-
-            if (titleMatch) {
-                name =
-                    titleMatch[1]
-                        .replace(/\s+/g, ' ')
-                        .trim();
-            }
-        }
-
-        /*
-         * ------------------------------------------------------------
-         * Return only if we actually found something useful.
-         * ------------------------------------------------------------
-         */
-
-        const hasData =
-            Boolean(
-                name ||
-                description ||
-                followers ||
-                posts ||
-                likes
-            );
-
-        if (!hasData) {
-            return null;
-        }
-
-        return {
-            status: 'ok',
-            source: 'public_fallback',
-
-            name:
-                name ||
-                platform,
-
-            description:
-                description || '',
-
-            image:
-                image || '',
-
-            followers,
-            posts,
-            likes,
-
-            views: 0,
-
-            engagement:
-                followers > 0 && posts > 0
-                    ? round(
-                        (
-                            likes /
-                            posts /
-                            followers
-                        ) * 100,
-                        2
-                    )
-                    : 0
-        };
-
-    } catch (err) {
-
-        console.error(
-            `[${platform}] public fallback error:`,
-            err?.message || err
-        );
-
-        return null;
-    }
-}
-/* ============================================================================
-   FACEBOOK (MODIFIED)
+   FACEBOOK
 ============================================================================ */
 
 async function fetchFacebook(
@@ -2378,33 +1994,22 @@ async function fetchFacebook(
                 endpoint
             );
 
-        // Handle API errors explicitly
-        if (response.status !== 200) {
-            const errorMsg = response.body?.error?.message || '';
-            if (response.status === 400 || response.status === 403) {
-                if (errorMsg.includes('permission') || errorMsg.includes('scopes')) {
-                    return {
-                        status: 'api_error',
-                        source: 'meta_api',
-                        error: `Facebook API permission error: ${errorMsg}. Add required permissions (pages_read_engagement).`
-                    };
-                }
-                if (errorMsg.includes('token') || errorMsg.includes('access')) {
-                    return {
-                        status: 'api_error',
-                        source: 'meta_api',
-                        error: `Facebook API token error: ${errorMsg}. Check FB_TOKEN.`
-                    };
-                }
-            }
-            // Other errors → fallback to public extraction (below)
-            console.warn(`[Facebook] API error (${response.status}), falling back to public.`);
-        } else {
-            const page = response.body;
-            const followers = toNumber(page.followers_count || page.fan_count);
+        if (
+            response.status === 200 &&
+            response.body
+        ) {
+            const page =
+                response.body;
 
-            let likes = 0, comments = 0, posts = 0;
-            let postsAvailable = true;
+            const followers =
+                toNumber(
+                    page.followers_count ||
+                    page.fan_count
+                );
+
+            let likes = 0;
+            let comments = 0;
+            let posts = 0;
 
             const postsEndpoint =
                 `https://graph.facebook.com/v23.0/` +
@@ -2415,39 +2020,75 @@ async function fetchFacebook(
                 `&limit=25` +
                 `&access_token=${encodeURIComponent(accessToken)}`;
 
-            const postsResponse = await apiGet(postsEndpoint);
-            if (postsResponse.status === 200) {
-                const items = postsResponse.body?.data || [];
-                posts = items.length;
-                for (const post of items) {
-                    likes += toNumber(post.likes?.summary?.total_count);
-                    comments += toNumber(post.comments?.summary?.total_count);
+            const postsResponse =
+                await apiGet(
+                    postsEndpoint
+                );
+
+            if (
+                postsResponse.status === 200
+            ) {
+                const items =
+                    postsResponse.body?.data ||
+                    [];
+
+                posts =
+                    items.length;
+
+                for (
+                    const post
+                    of items
+                ) {
+                    likes +=
+                        toNumber(
+                            post.likes
+                                ?.summary
+                                ?.total_count
+                        );
+
+                    comments +=
+                        toNumber(
+                            post.comments
+                                ?.summary
+                                ?.total_count
+                        );
                 }
-            } else {
-                // Posts unavailable – but page info is still good
-                postsAvailable = false;
-                console.warn(`[Facebook] Could not fetch posts for page ${pageId}, status ${postsResponse.status}`);
             }
 
-            const interactions = likes + comments;
+            const interactions =
+                likes + comments;
+
             return {
                 status: 'ok',
                 source: 'meta_api',
-                name: page.name || 'Facebook Page',
+
+                name:
+                    page.name ||
+                    'Facebook Page',
+
                 followers,
                 views: 0,
                 likes,
-                posts: postsAvailable ? posts : -1,  // -1 indicates “unavailable”
-                posts_available: postsAvailable,
-                engagement: (followers > 0 && posts > 0) ? round((interactions / posts / followers) * 100, 2) : 0,
-                // optional extra info for debugging
-                _api_status: postsResponse.status
+                posts,
+
+                engagement:
+                    followers > 0 &&
+                    posts > 0
+                        ? round(
+                            (
+                                interactions /
+                                posts /
+                                followers
+                            ) * 100,
+                            2
+                        )
+                        : 0
             };
         }
     }
 
     /*
-     * Public URL fallback (unchanged logic, but with clearer distinction).
+     * Public URL fallback.
      */
     const page =
         await fetchPublicPage(
@@ -2486,8 +2127,7 @@ async function fetchFacebook(
             followers: 0,
             views: 0,
             likes: 0,
-            posts: -1,          // -1 indicates “unavailable”
-            posts_available: false,
+            posts: 0,
             engagement: 0,
 
             error:
@@ -2515,8 +2155,6 @@ async function fetchFacebook(
         posts:
             metrics.posts,
 
-        posts_available: true,
-
         engagement:
             metrics.followers > 0 &&
             metrics.posts > 0
@@ -2533,7 +2171,7 @@ async function fetchFacebook(
 }
 
 /* ============================================================================
-   INSTAGRAM (MODIFIED)
+   INSTAGRAM
 ============================================================================ */
 
 async function fetchInstagram(
@@ -2568,110 +2206,166 @@ async function fetchInstagram(
                 pagesEndpoint
             );
 
-        // Handle /me/accounts errors
-        if (pagesResponse.status !== 200) {
-            const errorMsg = pagesResponse.body?.error?.message || '';
-            if (pagesResponse.status === 400 || pagesResponse.status === 403) {
-                if (errorMsg.includes('permission') || errorMsg.includes('scopes')) {
-                    return {
-                        status: 'api_error',
-                        source: 'meta_api',
-                        error: `Instagram API permission error: ${errorMsg}. Add pages_show_list and instagram_basic permissions.`
-                    };
-                }
-                if (errorMsg.includes('token') || errorMsg.includes('access')) {
-                    return {
-                        status: 'api_error',
-                        source: 'meta_api',
-                        error: `Instagram API token error: ${errorMsg}. Check FB_TOKEN.`
-                    };
-                }
-            }
-            // Other errors → fallback to public
-            console.warn(`[Instagram] /me/accounts error (${pagesResponse.status}), falling back to public.`);
-        } else {
-            const pages = pagesResponse.body?.data || [];
-            for (const page of pages) {
-                const pageToken = page.access_token || accessToken;
+        if (
+            pagesResponse.status === 200
+        ) {
+            const pages =
+                pagesResponse.body?.data ||
+                [];
 
-                // Check if this page has an Instagram Business account
+            for (
+                const page
+                of pages
+            ) {
+                const pageToken =
+                    page.access_token ||
+                    accessToken;
+
                 const relationshipEndpoint =
                     `https://graph.facebook.com/v23.0/` +
                     `${encodeURIComponent(page.id)}` +
                     `?fields=instagram_business_account` +
                     `&access_token=${encodeURIComponent(pageToken)}`;
 
-                const relationshipResponse = await apiGet(relationshipEndpoint);
-                if (relationshipResponse.status !== 200) continue;
+                const relationshipResponse =
+                    await apiGet(
+                        relationshipEndpoint
+                    );
 
-                const igId = relationshipResponse.body?.instagram_business_account?.id;
-                if (!igId) continue;
+                if (
+                    relationshipResponse.status !== 200
+                ) {
+                    continue;
+                }
 
-                // Fetch the Instagram Business account details
-                const fields = ['id', 'username', 'name', 'followers_count', 'media_count'].join(',');
+                const igId =
+                    relationshipResponse.body
+                        ?.instagram_business_account
+                        ?.id;
+
+                if (!igId) {
+                    continue;
+                }
+
+                const fields = [
+                    'id',
+                    'username',
+                    'name',
+                    'followers_count',
+                    'media_count'
+                ].join(',');
+
                 const accountEndpoint =
                     `https://graph.facebook.com/v23.0/` +
                     `${encodeURIComponent(igId)}` +
                     `?fields=${encodeURIComponent(fields)}` +
                     `&access_token=${encodeURIComponent(pageToken)}`;
 
-                const accountResponse = await apiGet(accountEndpoint);
-                if (accountResponse.status !== 200) {
-                    console.warn(`[Instagram] Account fetch failed for ${igId}, status ${accountResponse.status}`);
+                const accountResponse =
+                    await apiGet(
+                        accountEndpoint
+                    );
+
+                if (
+                    accountResponse.status !== 200
+                ) {
                     continue;
                 }
 
-                const account = accountResponse.body || {};
-                // Match username (case-insensitive)
-                if (account.username && account.username.toLowerCase() !== username.toLowerCase()) {
+                const account =
+                    accountResponse.body || {};
+
+                if (
+                    account.username &&
+                    account.username.toLowerCase() !==
+                    username.toLowerCase()
+                ) {
                     continue;
                 }
 
-                const followers = toNumber(account.followers_count);
-                // media_count may be 0 if truly no posts, but we'll treat -1 as unavailable later
-                let posts = toNumber(account.media_count);
-                let postsAvailable = true;
-                let likes = 0, comments = 0, mediaCount = 0;
+                const followers =
+                    toNumber(
+                        account.followers_count
+                    );
 
-                // Attempt to fetch media to get likes/comments and confirm post count
+                const posts =
+                    toNumber(
+                        account.media_count
+                    );
+
+                let likes = 0;
+                let comments = 0;
+                let mediaCount = 0;
+
                 const mediaEndpoint =
                     `https://graph.facebook.com/v23.0/` +
-                    `${encodeURIComponent(igId)}/media` +
-                    `?fields=${encodeURIComponent('id,like_count,comments_count')}` +
+                    `${encodeURIComponent(igId)}` +
+                    `/media?fields=${encodeURIComponent(
+                        'id,like_count,comments_count'
+                    )}` +
                     `&limit=25` +
                     `&access_token=${encodeURIComponent(pageToken)}`;
 
-                const mediaResponse = await apiGet(mediaEndpoint);
-                if (mediaResponse.status === 200) {
-                    const media = mediaResponse.body?.data || [];
-                    mediaCount = media.length;
-                    for (const item of media) {
-                        likes += toNumber(item.like_count);
-                        comments += toNumber(item.comments_count);
+                const mediaResponse =
+                    await apiGet(
+                        mediaEndpoint
+                    );
+
+                if (
+                    mediaResponse.status === 200
+                ) {
+                    const media =
+                        mediaResponse.body?.data ||
+                        [];
+
+                    mediaCount =
+                        media.length;
+
+                    for (
+                        const item
+                        of media
+                    ) {
+                        likes +=
+                            toNumber(
+                                item.like_count
+                            );
+
+                        comments +=
+                            toNumber(
+                                item.comments_count
+                            );
                     }
-                    // If posts is 0 but mediaCount > 0, something is wrong; trust mediaCount
-                    if (posts === 0 && mediaCount > 0) {
-                        posts = mediaCount;
-                    }
-                    // If posts > 0 but mediaCount is 0 (should not happen), we still have posts from account
-                } else {
-                    // Media fetch failed – we still have posts from account.media_count (if available)
-                    postsAvailable = false;  // media details unavailable
-                    console.warn(`[Instagram] Could not fetch media for ${igId}, status ${mediaResponse.status}`);
                 }
 
-                const interactions = likes + comments;
+                const interactions =
+                    likes + comments;
+
                 return {
                     status: 'ok',
                     source: 'instagram_meta_api',
-                    name: account.name || account.username || username,
+
+                    name:
+                        account.name ||
+                        account.username ||
+                        username,
+
                     followers,
                     views: 0,
                     likes,
-                    posts: posts,   // posts count from account (or media if corrected)
-                    posts_available: postsAvailable,
-                    engagement: (followers > 0 && posts > 0) ? round((interactions / posts / followers) * 100, 2) : 0,
-                    _api_status: mediaResponse.status
+                    posts,
+
+                    engagement:
+                        followers > 0 &&
+                        mediaCount > 0
+                            ? round(
+                                (
+                                    interactions /
+                                    mediaCount /
+                                    followers
+                                ) * 100,
+                                2
+                            )
+                            : 0
                 };
             }
         }
@@ -2717,8 +2411,7 @@ async function fetchInstagram(
             followers: 0,
             views: 0,
             likes: 0,
-            posts: -1,          // -1 indicates “unavailable”
-            posts_available: false,
+            posts: 0,
             engagement: 0,
 
             error:
@@ -2745,8 +2438,6 @@ async function fetchInstagram(
 
         posts:
             metrics.posts,
-
-        posts_available: true,
 
         engagement:
             metrics.followers > 0 &&
@@ -3714,12 +3405,6 @@ app.post(
                     });
             }
 
-            // ================================================================
-            // TEMPORARY TEST TOKEN - REMOVE AFTER TESTING
-            // ================================================================
-            const TEST_TOKEN = 'EAAU7n3kf1K8BSbJyGex8M0rstlK2AQKn88TEkmmSU8NZAtL4sQPsIkVVW6BDWMoqkGZCSAus3KnzdglyUdsSUwsNEpLdlSofhZAkuvj8THTrSumGQGRizR08qI175XkxpE5QHo3nUgymZAKmBfZAYdn45cuYZCJ3oQZB6JTOSjWSGlAYYmHd8CkJKVQZBWEzZAUcxlM6zds1LektBDUYRkj5SC3dNs7blZB8xgeljhfSXAThhPXRBqzcvuFc0fS6Aj0LTLrYYwihJO20ZAoFB3izsbt1btMHpxSCvjvpnMzVdHiTZBTCkAlZCtea5DKZAQaR3ba16foyKehBZBG7Y6AIAZDZD';
-            // ================================================================
-
             /*
              * Credentials can come from:
              *
@@ -3743,19 +3428,15 @@ app.post(
                         ''
                     ),
 
-                // Override facebook token with TEST_TOKEN for testing
                 facebook:
                     safeToken(
-                        TEST_TOKEN ||  // <-- TEMPORARY: hardcoded token
                         process.env.FB_TOKEN ||
                         apiKeys.facebook ||
                         ''
                     ),
 
-                // Instagram also uses TEST_TOKEN (or falls back to facebook key)
                 instagram:
                     safeToken(
-                        TEST_TOKEN ||  // <-- TEMPORARY: hardcoded token
                         process.env.IG_TOKEN ||
                         apiKeys.instagram ||
                         process.env.FB_TOKEN ||
