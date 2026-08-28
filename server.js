@@ -1,9 +1,33 @@
 /**
  * Kiwami Marketing System
- * Backend API Server - COMPLETE WORKING VERSION
- * 
- * Extracts data using HTML scraping (no API keys required)
- * Returns structured data with availability flags
+ * Backend API Server
+ *
+ * DROP-IN replacement for server.js
+ *
+ * Main analytics behavior:
+ *
+ *   profile URL
+ *        ↓
+ *   identify platform
+ *        ↓
+ *   official API if credential exists
+ *        ↓
+ *   otherwise fetch public profile URL
+ *        ↓
+ *   extract publicly available metadata/statistics
+ *        ↓
+ *   return normalized analytics response
+ *
+ * Existing frontend API contract preserved:
+ *
+ * POST /api/login
+ * GET  /api/login-status
+ * POST /api/logout
+ * GET  /api/health
+ * POST /api/analytics
+ * GET  /api/notifications
+ * POST /api/post/:platform
+ * POST /api/upload
  */
 
 require('dotenv').config();
@@ -41,8 +65,15 @@ const SESSION_TTL_MS = 30 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 20000;
 const MAX_REDIRECTS = 5;
 
+const LINKEDIN_VERSION =
+    process.env.LINKEDIN_VERSION || '202607';
+
 const loginAttempts = new Map();
 const sessions = new Map();
+
+/* ============================================================================
+   UPLOAD DIRECTORY
+============================================================================ */
 
 const uploadsDir = path.join(__dirname, 'uploads');
 
@@ -51,91 +82,232 @@ try {
         fs.mkdirSync(uploadsDir, { recursive: true });
     }
 } catch (err) {
-    console.error('Could not create uploads directory:', err.message);
+    console.error(
+        'Could not create uploads directory:',
+        err.message
+    );
 }
 
-const configuredFrontendOrigin = (process.env.FRONTEND_ORIGIN || '').trim();
+/* ============================================================================
+   CORS
+============================================================================ */
+
+const configuredFrontendOrigin = (
+    process.env.FRONTEND_ORIGIN || ''
+).trim();
 
 if (configuredFrontendOrigin) {
     app.use(cors({
         origin: configuredFrontendOrigin,
         credentials: true,
         methods: ['GET', 'POST', 'OPTIONS'],
-        allowedHeaders: ['Content-Type', 'Authorization']
+        allowedHeaders: [
+            'Content-Type',
+            'Authorization'
+        ]
     }));
 } else {
     app.use(cors({
         origin: '*',
         methods: ['GET', 'POST', 'OPTIONS'],
-        allowedHeaders: ['Content-Type', 'Authorization']
+        allowedHeaders: [
+            'Content-Type',
+            'Authorization'
+        ]
     }));
 }
 
+/* ============================================================================
+   EXPRESS
+============================================================================ */
+
 app.use((req, res, next) => {
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
-    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader(
+        'X-Content-Type-Options',
+        'nosniff'
+    );
+
+    res.setHeader(
+        'X-Frame-Options',
+        'SAMEORIGIN'
+    );
+
+    res.setHeader(
+        'Referrer-Policy',
+        'strict-origin-when-cross-origin'
+    );
+
     next();
 });
 
-app.use(express.json({ limit: '100mb' }));
-app.use(express.urlencoded({ limit: '100mb', extended: true }));
+app.use(express.json({
+    limit: '100mb'
+}));
+
+app.use(express.urlencoded({
+    limit: '100mb',
+    extended: true
+}));
+
 app.use(express.static(path.join(__dirname)));
-app.use('/uploads', express.static(uploadsDir));
+
+app.use(
+    '/uploads',
+    express.static(uploadsDir)
+);
 
 /* ============================================================================
-   HELPERS
+   GENERAL HELPERS
 ============================================================================ */
 
 function safe(value, max = 500) {
-    if (typeof value !== 'string') return '';
-    return value.replace(/[<>"'`]/g, '').trim().slice(0, max);
+    if (typeof value !== 'string') {
+        return '';
+    }
+
+    return value
+        .replace(/[<>"'`]/g, '')
+        .trim()
+        .slice(0, max);
 }
 
 function safeToken(value, max = 10000) {
-    if (typeof value !== 'string') return '';
+    if (typeof value !== 'string') {
+        return '';
+    }
+
     return value.trim().slice(0, max);
 }
 
 function toNumber(value) {
     if (typeof value === 'string') {
-        value = value.replace(/,/g, '').trim();
+        value = value
+            .replace(/,/g, '')
+            .trim();
     }
+
     const n = Number(value);
+
     return Number.isFinite(n) ? n : 0;
 }
 
 function round(value, decimals = 2) {
     const factor = Math.pow(10, decimals);
-    return Math.round((toNumber(value) + Number.EPSILON) * factor) / factor;
+
+    return Math.round(
+        (toNumber(value) + Number.EPSILON) * factor
+    ) / factor;
 }
 
 function timingSafeEquals(a, b) {
     const aBuf = Buffer.from(String(a || ''));
     const bBuf = Buffer.from(String(b || ''));
-    if (aBuf.length !== bBuf.length) return false;
-    return crypto.timingSafeEqual(aBuf, bBuf);
+
+    if (aBuf.length !== bBuf.length) {
+        return false;
+    }
+
+    return crypto.timingSafeEqual(
+        aBuf,
+        bBuf
+    );
 }
 
 function getClientIp(req) {
-    return (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown')
-        .toString().split(',')[0].trim();
+    return (
+        req.headers['x-forwarded-for'] ||
+        req.socket?.remoteAddress ||
+        'unknown'
+    )
+        .toString()
+        .split(',')[0]
+        .trim();
 }
 
+function jsonErrorMessage(
+    body,
+    fallback = 'API request failed'
+) {
+    if (!body) {
+        return fallback;
+    }
+
+    if (typeof body === 'string') {
+        return body.slice(0, 500);
+    }
+
+    return (
+        body?.error?.message ||
+        body?.message ||
+        body?.detail ||
+        body?.errors?.[0]?.message ||
+        body?.error?.description ||
+        fallback
+    );
+}
+
+/* ============================================================================
+   NUMBER PARSING
+============================================================================ */
+
+/*
+ * Converts things such as:
+ *
+ * "1.2K"  -> 1200
+ * "3.4M"  -> 3400000
+ * "2B"    -> 2000000000
+ * "12,500" -> 12500
+ */
 function parseMetric(value) {
-    if (value === null || value === undefined) return 0;
-    if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
-    let text = String(value).trim().replace(/,/g, '');
-    if (!text) return 0;
-    const match = text.match(/(-?\d+(?:\.\d+)?)\s*([KMBT])?/i);
-    if (!match) return 0;
+    if (
+        value === null ||
+        value === undefined
+    ) {
+        return 0;
+    }
+
+    if (typeof value === 'number') {
+        return Number.isFinite(value)
+            ? value
+            : 0;
+    }
+
+    let text = String(value)
+        .trim()
+        .replace(/,/g, '');
+
+    if (!text) {
+        return 0;
+    }
+
+    const match = text.match(
+        /(-?\d+(?:\.\d+)?)\s*([KMBT])?/i
+    );
+
+    if (!match) {
+        return 0;
+    }
+
     let number = Number(match[1]);
-    if (!Number.isFinite(number)) return 0;
-    const suffix = (match[2] || '').toUpperCase();
-    if (suffix === 'K') number *= 1000;
-    else if (suffix === 'M') number *= 1000000;
-    else if (suffix === 'B') number *= 1000000000;
-    else if (suffix === 'T') number *= 1000000000000;
+
+    if (!Number.isFinite(number)) {
+        return 0;
+    }
+
+    const suffix = (
+        match[2] || ''
+    ).toUpperCase();
+
+    if (suffix === 'K') {
+        number *= 1000;
+    } else if (suffix === 'M') {
+        number *= 1000000;
+    } else if (suffix === 'B') {
+        number *= 1000000000;
+    } else if (suffix === 'T') {
+        number *= 1000000000000;
+    }
+
     return Math.round(number);
 }
 
@@ -143,285 +315,891 @@ function parseMetric(value) {
    HTTP GET
 ============================================================================ */
 
-function apiGet(rawUrl, headers = {}, redirectCount = 0) {
+function apiGet(
+    rawUrl,
+    headers = {},
+    redirectCount = 0
+) {
     return new Promise((resolve, reject) => {
         if (redirectCount > MAX_REDIRECTS) {
-            return reject(new Error('Too many redirects'));
+            return reject(
+                new Error('Too many redirects')
+            );
         }
+
         let parsed;
+
         try {
             parsed = new URL(rawUrl);
         } catch {
-            return reject(new Error('Invalid URL'));
+            return reject(
+                new Error('Invalid URL')
+            );
         }
-        const isHttps = parsed.protocol === 'https:';
-        const lib = isHttps ? https : http;
+
+        const isHttps =
+            parsed.protocol === 'https:';
+
+        const lib =
+            isHttps ? https : http;
+
         const options = {
             hostname: parsed.hostname,
-            port: parsed.port || (isHttps ? 443 : 80),
-            path: parsed.pathname + parsed.search,
+            port:
+                parsed.port ||
+                (isHttps ? 443 : 80),
+
+            path:
+                parsed.pathname +
+                parsed.search,
+
             method: 'GET',
+
             headers: {
-                'Accept': 'text/html,application/json,application/xhtml+xml,*/*;q=0.8',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                Accept:
+                    'text/html,application/json,application/xhtml+xml,*/*;q=0.8',
+
+                'User-Agent':
+                    'Mozilla/5.0 (compatible; KiwamiMarketingSystem/3.0; +https://kiwamitech.co.ke)',
+
                 ...headers
             },
-            timeout: REQUEST_TIMEOUT_MS
+
+            timeout:
+                REQUEST_TIMEOUT_MS
         };
-        const request = lib.request(options, response => {
-            if ([301, 302, 303, 307, 308].includes(response.statusCode) && response.headers.location) {
-                const redirectUrl = new URL(response.headers.location, rawUrl).toString();
-                response.resume();
-                return apiGet(redirectUrl, headers, redirectCount + 1).then(resolve).catch(reject);
-            }
-            let data = '';
-            response.setEncoding('utf8');
-            response.on('data', chunk => {
-                data += chunk;
-                if (data.length > 15 * 1024 * 1024) {
-                    request.destroy(new Error('Response too large'));
-                }
-            });
-            response.on('end', () => {
-                const contentType = String(response.headers['content-type'] || '').toLowerCase();
-                let body = data;
-                if (contentType.includes('application/json') || contentType.includes('+json')) {
-                    try {
-                        body = data ? JSON.parse(data) : {};
-                    } catch {
-                        body = data;
+
+        const request =
+            lib.request(
+                options,
+                response => {
+
+                    if (
+                        [301, 302, 303, 307, 308]
+                            .includes(
+                                response.statusCode
+                            ) &&
+                        response.headers.location
+                    ) {
+                        const redirectUrl =
+                            new URL(
+                                response.headers.location,
+                                rawUrl
+                            ).toString();
+
+                        response.resume();
+
+                        return apiGet(
+                            redirectUrl,
+                            headers,
+                            redirectCount + 1
+                        )
+                            .then(resolve)
+                            .catch(reject);
                     }
+
+                    let data = '';
+
+                    response.setEncoding(
+                        'utf8'
+                    );
+
+                    response.on(
+                        'data',
+                        chunk => {
+                            data += chunk;
+
+                            /*
+                             * Prevent enormous responses from consuming
+                             * the server unnecessarily.
+                             */
+                            if (
+                                data.length >
+                                15 * 1024 * 1024
+                            ) {
+                                request.destroy(
+                                    new Error(
+                                        'Response too large'
+                                    )
+                                );
+                            }
+                        }
+                    );
+
+                    response.on(
+                        'end',
+                        () => {
+                            const contentType =
+                                String(
+                                    response.headers[
+                                        'content-type'
+                                    ] || ''
+                                ).toLowerCase();
+
+                            let body =
+                                data;
+
+                            if (
+                                contentType.includes(
+                                    'application/json'
+                                ) ||
+                                contentType.includes(
+                                    '+json'
+                                )
+                            ) {
+                                try {
+                                    body =
+                                        data
+                                            ? JSON.parse(data)
+                                            : {};
+                                } catch {
+                                    body = data;
+                                }
+                            }
+
+                            resolve({
+                                status:
+                                    response.statusCode || 0,
+
+                                headers:
+                                    response.headers || {},
+
+                                body,
+
+                                raw:
+                                    data
+                            });
+                        }
+                    );
                 }
-                resolve({
-                    status: response.statusCode || 0,
-                    headers: response.headers || {},
-                    body,
-                    raw: data
-                });
-            });
-        });
-        request.on('timeout', () => request.destroy(new Error('Request timed out')));
-        request.on('error', reject);
+            );
+
+        request.on(
+            'timeout',
+            () => {
+                request.destroy(
+                    new Error(
+                        'Request timed out'
+                    )
+                );
+            }
+        );
+
+        request.on(
+            'error',
+            reject
+        );
+
         request.end();
     });
 }
 
 /* ============================================================================
-   HTML SCRAPING HELPERS
+   PUBLIC URL FETCHING
 ============================================================================ */
 
-function decodeHtml(text) {
-    if (!text) return '';
-    return String(text)
-        .replace(/&amp;/gi, '&')
-        .replace(/&quot;/gi, '"')
-        .replace(/&#39;/gi, "'")
-        .replace(/&lt;/gi, '<')
-        .replace(/&gt;/gi, '>');
-}
-
-function stripTags(text) {
-    return decodeHtml(String(text || '')
-        .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-        .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-        .replace(/<[^>]+>/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim());
-}
-
-function getMetaContent(html, attribute, value) {
-    if (!html) return '';
-    const escaped = String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const regex = new RegExp(`<meta[^>]+${attribute}\\s*=\\s*["']${escaped}["'][^>]+content\\s*=\\s*["']([^"']*)["'][^>]*>`, 'i');
-    const match = html.match(regex);
-    if (match) return decodeHtml(match[1]);
-    const reverseRegex = new RegExp(`<meta[^>]+content\\s*=\\s*["']([^"']*)["'][^>]+${attribute}\\s*=\\s*["']${escaped}["'][^>]*>`, 'i');
-    const reverseMatch = html.match(reverseRegex);
-    return reverseMatch ? decodeHtml(reverseMatch[1]) : '';
-}
-
-function getMetaProperty(html, property) {
-    return getMetaContent(html, 'property', property);
-}
-
-function getMetaName(html, name) {
-    return getMetaContent(html, 'name', name);
-}
-
-function extractJsonLd(html) {
-    const results = [];
-    if (!html) return results;
-    const regex = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
-    let match;
-    while ((match = regex.exec(html))) {
-        try {
-            const parsed = JSON.parse(match[1].trim());
-            if (Array.isArray(parsed)) {
-                results.push(...parsed);
-            } else {
-                results.push(parsed);
-            }
-        } catch {}
-    }
-    return results;
-}
-
-function findAllValues(object, keys, output = [], depth = 0) {
-    if (!object || depth > 8 || typeof object !== 'object') return output;
-    const wanted = new Set(keys.map(key => String(key).toLowerCase()));
-    for (const [key, value] of Object.entries(object)) {
-        if (wanted.has(String(key).toLowerCase())) {
-            output.push(value);
-        }
-        if (value && typeof value === 'object') {
-            findAllValues(value, keys, output, depth + 1);
-        }
-    }
-    return output;
-}
-
-function firstPositiveMetric(values) {
-    for (const value of values) {
-        const n = parseMetric(value);
-        if (n > 0) return n;
-    }
-    return 0;
-}
-
-/* ============================================================================
-   PUBLIC PAGE FETCHING
-============================================================================ */
-
-async function fetchPublicPage(profileUrl) {
+/*
+ * This is the important addition.
+ *
+ * When no official API credential is available, the server actually
+ * retrieves the supplied profile URL.
+ */
+async function fetchPublicPage(
+    profileUrl
+) {
     try {
-        const response = await apiGet(profileUrl, {
-            'Accept': 'text/html,application/xhtml+xml'
-        });
-        if (response.status < 200 || response.status >= 400) {
+        const response =
+            await apiGet(
+                profileUrl,
+                {
+                    Accept:
+                        'text/html,application/xhtml+xml'
+                }
+            );
+
+        if (
+            response.status < 200 ||
+            response.status >= 400
+        ) {
             return {
                 ok: false,
-                status: response.status,
-                html: typeof response.body === 'string' ? response.body : response.raw || '',
-                error: `Profile page returned HTTP ${response.status}`
+                status:
+                    response.status,
+                html:
+                    typeof response.body === 'string'
+                        ? response.body
+                        : response.raw || '',
+                error:
+                    `Profile page returned HTTP ${response.status}`
             };
         }
+
         return {
             ok: true,
-            status: response.status,
-            html: typeof response.body === 'string' ? response.body : response.raw || ''
+            status:
+                response.status,
+            html:
+                typeof response.body === 'string'
+                    ? response.body
+                    : response.raw || ''
         };
+
     } catch (err) {
         return {
             ok: false,
             status: 0,
             html: '',
-            error: err?.message || 'Could not retrieve profile URL'
+            error:
+                err?.message ||
+                'Could not retrieve profile URL'
         };
     }
 }
 
 /* ============================================================================
-   PUBLIC METRICS EXTRACTION
+   HTML HELPERS
 ============================================================================ */
 
-function extractPublicMetrics(html) {
-    const jsonLd = extractJsonLd(html);
-    const title = getMetaProperty(html, 'og:title') || getMetaName(html, 'twitter:title') ||
-        (html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || '';
-    const description = getMetaProperty(html, 'og:description') || getMetaName(html, 'description') ||
-        getMetaName(html, 'twitter:description') || '';
-    const image = getMetaProperty(html, 'og:image') || getMetaName(html, 'twitter:image') || '';
-
-    const jsonLdFollowers = findAllValues(jsonLd, ['followers', 'followerCount', 'subscriberCount', 'userInteractionCount']);
-    const jsonLdViews = findAllValues(jsonLd, ['viewCount', 'views', 'interactionCount']);
-    const jsonLdLikes = findAllValues(jsonLd, ['likeCount', 'likes']);
-    const jsonLdPosts = findAllValues(jsonLd, ['videoCount', 'postCount', 'numberOfItems', 'interactionCount']);
-
-    let followers = firstPositiveMetric(jsonLdFollowers);
-    let views = firstPositiveMetric(jsonLdViews);
-    let likes = firstPositiveMetric(jsonLdLikes);
-    let posts = firstPositiveMetric(jsonLdPosts);
-
-    const text = stripTags(html);
-
-    const patterns = {
-        followers: [
-            /([\d.,]+[KMB]?)\s*(?:followers|follower)/i,
-            /(?:followers|follower)[^0-9]{0,30}([\d.,]+[KMB]?)/i,
-            /([\d.,]+[KMB]?)\s*(?:subscribers|subscriber)/i
-        ],
-        views: [
-            /([\d.,]+[KMB]?)\s*(?:views|view)/i,
-            /(?:views|view)[^0-9]{0,30}([\d.,]+[KMB]?)/i
-        ],
-        likes: [
-            /([\d.,]+[KMB]?)\s*(?:likes|like)/i,
-            /(?:likes|like)[^0-9]{0,30}([\d.,]+[KMB]?)/i
-        ],
-        posts: [
-            /([\d.,]+[KMB]?)\s*(?:posts|post)/i,
-            /([\d.,]+[KMB]?)\s*(?:videos|video)/i
-        ]
-    };
-
-    function patternValue(patternArray) {
-        for (const pattern of patternArray) {
-            const match = text.match(pattern);
-            if (match) {
-                const n = parseMetric(match[1]);
-                if (n > 0) return n;
-            }
-        }
-        return 0;
+function decodeHtml(text) {
+    if (!text) {
+        return '';
     }
 
-    if (!followers) followers = patternValue(patterns.followers);
-    if (!views) views = patternValue(patterns.views);
-    if (!likes) likes = patternValue(patterns.likes);
-    if (!posts) posts = patternValue(patterns.posts);
+    return String(text)
+        .replace(/&amp;/gi, '&')
+        .replace(/&quot;/gi, '"')
+        .replace(/&#39;/gi, "'")
+        .replace(/&apos;/gi, "'")
+        .replace(/&lt;/gi, '<')
+        .replace(/&gt;/gi, '>')
+        .replace(/&#x27;/gi, "'")
+        .replace(/&#x2F;/gi, '/')
+        .replace(/&#(\d+);/g, (_, n) =>
+            String.fromCharCode(
+                Number(n)
+            )
+        );
+}
 
-    // JSON regex patterns
-    const jsonPatterns = {
-        followers: [
-            /"followerCount"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
-            /"followers_count"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
-            /"followers"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i
-        ],
-        views: [
-            /"viewCount"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
-            /"view_count"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i
-        ],
-        likes: [
-            /"likeCount"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
-            /"like_count"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i
-        ],
-        posts: [
-            /"videoCount"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
-            /"media_count"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
-            /"postCount"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i
-        ]
-    };
+function stripTags(text) {
+    return decodeHtml(
+        String(text || '')
+            .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+            .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+    );
+}
 
-    function regexMetric(patternArray) {
-        for (const pattern of patternArray) {
-            const match = html.match(pattern);
-            if (match) {
-                const n = parseMetric(match[1]);
-                if (n > 0) return n;
-            }
-        }
-        return 0;
+function getMetaContent(
+    html,
+    attribute,
+    value
+) {
+    if (!html) {
+        return '';
     }
 
-    if (!followers) followers = regexMetric(jsonPatterns.followers);
-    if (!views) views = regexMetric(jsonPatterns.views);
-    if (!likes) likes = regexMetric(jsonPatterns.likes);
-    if (!posts) posts = regexMetric(jsonPatterns.posts);
+    const escaped =
+        String(value)
+            .replace(
+                /[.*+?^${}()|[\]\\]/g,
+                '\\$&'
+            );
+
+    const regex =
+        new RegExp(
+            `<meta[^>]+${attribute}\\s*=\\s*["']${escaped}["'][^>]+content\\s*=\\s*["']([^"']*)["'][^>]*>`,
+            'i'
+        );
+
+    const match =
+        html.match(regex);
+
+    if (match) {
+        return decodeHtml(
+            match[1]
+        );
+    }
+
+    /*
+     * Some pages put content before the property/name attribute.
+     */
+    const reverseRegex =
+        new RegExp(
+            `<meta[^>]+content\\s*=\\s*["']([^"']*)["'][^>]+${attribute}\\s*=\\s*["']${escaped}["'][^>]*>`,
+            'i'
+        );
+
+    const reverseMatch =
+        html.match(reverseRegex);
+
+    return reverseMatch
+        ? decodeHtml(
+            reverseMatch[1]
+        )
+        : '';
+}
+
+function getMetaProperty(
+    html,
+    property
+) {
+    return getMetaContent(
+        html,
+        'property',
+        property
+    );
+}
+
+function getMetaName(
+    html,
+    name
+) {
+    return getMetaContent(
+        html,
+        'name',
+        name
+    );
+}
+
+function extractJsonLd(
+    html
+) {
+    const results = [];
+
+    if (!html) {
+        return results;
+    }
+
+    const regex =
+        /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+
+    let match;
+
+    while (
+        (match = regex.exec(html))
+    ) {
+        try {
+            const parsed =
+                JSON.parse(
+                    match[1].trim()
+                );
+
+            if (
+                Array.isArray(parsed)
+            ) {
+                results.push(
+                    ...parsed
+                );
+            } else {
+                results.push(
+                    parsed
+                );
+            }
+        } catch {
+            /*
+             * Some social sites embed malformed JSON-LD.
+             * Ignore it and continue.
+             */
+        }
+    }
+
+    return results;
+}
+
+function recursiveFindValue(
+    object,
+    keys,
+    depth = 0
+) {
+    if (
+        !object ||
+        depth > 8
+    ) {
+        return undefined;
+    }
+
+    const wanted =
+        new Set(
+            keys.map(
+                key =>
+                    String(key)
+                        .toLowerCase()
+            )
+        );
+
+    if (
+        typeof object !== 'object'
+    ) {
+        return undefined;
+    }
+
+    for (
+        const [key, value]
+        of Object.entries(object)
+    ) {
+        if (
+            wanted.has(
+                String(key)
+                    .toLowerCase()
+            )
+        ) {
+            return value;
+        }
+    }
+
+    for (
+        const value
+        of Object.values(object)
+    ) {
+        if (
+            value &&
+            typeof value === 'object'
+        ) {
+            const found =
+                recursiveFindValue(
+                    value,
+                    keys,
+                    depth + 1
+                );
+
+            if (
+                found !== undefined
+            ) {
+                return found;
+            }
+        }
+    }
+
+    return undefined;
+}
+
+function findAllValues(
+    object,
+    keys,
+    output = [],
+    depth = 0
+) {
+    if (
+        !object ||
+        depth > 8
+    ) {
+        return output;
+    }
+
+    if (
+        typeof object !== 'object'
+    ) {
+        return output;
+    }
+
+    const wanted =
+        new Set(
+            keys.map(
+                key =>
+                    String(key)
+                        .toLowerCase()
+            )
+        );
+
+    for (
+        const [key, value]
+        of Object.entries(object)
+    ) {
+        if (
+            wanted.has(
+                String(key)
+                    .toLowerCase()
+            )
+        ) {
+            output.push(value);
+        }
+
+        if (
+            value &&
+            typeof value === 'object'
+        ) {
+            findAllValues(
+                value,
+                keys,
+                output,
+                depth + 1
+            );
+        }
+    }
+
+    return output;
+}
+
+function firstPositiveMetric(
+    values
+) {
+    for (
+        const value
+        of values
+    ) {
+        const n =
+            parseMetric(value);
+
+        if (n > 0) {
+            return n;
+        }
+    }
+
+    return 0;
+}
+
+function publicPageBaseData(
+    html
+) {
+    const jsonLd =
+        extractJsonLd(html);
+
+    const title =
+        getMetaProperty(
+            html,
+            'og:title'
+        ) ||
+        getMetaName(
+            html,
+            'twitter:title'
+        ) ||
+        (
+            html.match(
+                /<title[^>]*>([\s\S]*?)<\/title>/i
+            ) || []
+        )[1] ||
+        '';
+
+    const description =
+        getMetaProperty(
+            html,
+            'og:description'
+        ) ||
+        getMetaName(
+            html,
+            'description'
+        ) ||
+        getMetaName(
+            html,
+            'twitter:description'
+        ) ||
+        '';
+
+    const image =
+        getMetaProperty(
+            html,
+            'og:image'
+        ) ||
+        getMetaName(
+            html,
+            'twitter:image'
+        ) ||
+        '';
 
     return {
-        name: stripTags(title),
-        description: stripTags(description),
+        title:
+            stripTags(title),
+
+        description:
+            stripTags(description),
+
         image,
+
+        jsonLd
+    };
+}
+
+/* ============================================================================
+   PUBLIC NUMBER EXTRACTION
+============================================================================ */
+
+function extractPublicMetrics(
+    html,
+    platform
+) {
+    const base =
+        publicPageBaseData(html);
+
+    const jsonLd =
+        base.jsonLd;
+
+    const jsonLdFollowers =
+        findAllValues(
+            jsonLd,
+            [
+                'followers',
+                'followerCount',
+                'subscriberCount',
+                'userInteractionCount'
+            ]
+        );
+
+    const jsonLdViews =
+        findAllValues(
+            jsonLd,
+            [
+                'viewCount',
+                'views',
+                'interactionCount'
+            ]
+        );
+
+    const jsonLdLikes =
+        findAllValues(
+            jsonLd,
+            [
+                'likeCount',
+                'likes'
+            ]
+        );
+
+    const jsonLdPosts =
+        findAllValues(
+            jsonLd,
+            [
+                'videoCount',
+                'postCount',
+                'numberOfItems',
+                'interactionCount'
+            ]
+        );
+
+    let followers =
+        firstPositiveMetric(
+            jsonLdFollowers
+        );
+
+    let views =
+        firstPositiveMetric(
+            jsonLdViews
+        );
+
+    let likes =
+        firstPositiveMetric(
+            jsonLdLikes
+        );
+
+    let posts =
+        firstPositiveMetric(
+            jsonLdPosts
+        );
+
+    /*
+     * Generic visible-text extraction.
+     *
+     * These are intentionally conservative.
+     */
+    const text =
+        stripTags(html);
+
+    const followerPatterns = [
+        /([\d.,]+[KMB]?)\s*(?:followers|follower)/i,
+        /(?:followers|follower)[^0-9]{0,30}([\d.,]+[KMB]?)/i,
+        /([\d.,]+[KMB]?)\s*(?:subscribers|subscriber)/i,
+        /(?:subscribers|subscriber)[^0-9]{0,30}([\d.,]+[KMB]?)/i
+    ];
+
+    const viewPatterns = [
+        /([\d.,]+[KMB]?)\s*(?:views|view)/i,
+        /(?:views|view)[^0-9]{0,30}([\d.,]+[KMB]?)/i
+    ];
+
+    const likePatterns = [
+        /([\d.,]+[KMB]?)\s*(?:likes|like)/i,
+        /(?:likes|like)[^0-9]{0,30}([\d.,]+[KMB]?)/i
+    ];
+
+    const postPatterns = [
+        /([\d.,]+[KMB]?)\s*(?:posts|post)/i,
+        /([\d.,]+[KMB]?)\s*(?:videos|video)/i
+    ];
+
+    function patternValue(
+        patterns
+    ) {
+        for (
+            const pattern
+            of patterns
+        ) {
+            const match =
+                text.match(pattern);
+
+            if (match) {
+                const n =
+                    parseMetric(
+                        match[1]
+                    );
+
+                if (n > 0) {
+                    return n;
+                }
+            }
+        }
+
+        return 0;
+    }
+
+    if (!followers) {
+        followers =
+            patternValue(
+                followerPatterns
+            );
+    }
+
+    if (!views) {
+        views =
+            patternValue(
+                viewPatterns
+            );
+    }
+
+    if (!likes) {
+        likes =
+            patternValue(
+                likePatterns
+            );
+    }
+
+    if (!posts) {
+        posts =
+            patternValue(
+                postPatterns
+            );
+    }
+
+    /*
+     * Platform-specific JSON strings commonly used in public pages.
+     */
+    const followerJsonPatterns = [
+        /"followerCount"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
+        /"followers_count"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
+        /"followers"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
+        /"subscriberCount"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
+        /"subscriber_count"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i
+    ];
+
+    const viewJsonPatterns = [
+        /"viewCount"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
+        /"view_count"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
+        /"views"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i
+    ];
+
+    const likeJsonPatterns = [
+        /"likeCount"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
+        /"like_count"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
+        /"likes"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i
+    ];
+
+    const postJsonPatterns = [
+        /"videoCount"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
+        /"video_count"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
+        /"postCount"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i,
+        /"media_count"\s*:\s*"?(?:([\d.,]+[KMB]?))"?/i
+    ];
+
+    function regexMetric(
+        patterns
+    ) {
+        for (
+            const pattern
+            of patterns
+        ) {
+            const match =
+                html.match(pattern);
+
+            if (match) {
+                const n =
+                    parseMetric(
+                        match[1]
+                    );
+
+                if (n > 0) {
+                    return n;
+                }
+            }
+        }
+
+        return 0;
+    }
+
+    if (!followers) {
+        followers =
+            regexMetric(
+                followerJsonPatterns
+            );
+    }
+
+    if (!views) {
+        views =
+            regexMetric(
+                viewJsonPatterns
+            );
+    }
+
+    if (!likes) {
+        likes =
+            regexMetric(
+                likeJsonPatterns
+            );
+    }
+
+    if (!posts) {
+        posts =
+            regexMetric(
+                postJsonPatterns
+            );
+    }
+
+    /*
+     * YouTube has particularly useful public structured data.
+     */
+    if (
+        platform === 'youtube'
+    ) {
+        const subscriberMatch =
+            html.match(
+                /"subscriberCountText"[\s\S]{0,500}?"simpleText"\s*:\s*"([^"]+)"/i
+            );
+
+        if (
+            !followers &&
+            subscriberMatch
+        ) {
+            followers =
+                parseMetric(
+                    subscriberMatch[1]
+                );
+        }
+
+        const videoCountMatch =
+            html.match(
+                /"videoCountText"[\s\S]{0,500}?"simpleText"\s*:\s*"([^"]+)"/i
+            );
+
+        if (
+            !posts &&
+            videoCountMatch
+        ) {
+            posts =
+                parseMetric(
+                    videoCountMatch[1]
+                );
+        }
+    }
+
+    return {
+        name:
+            base.title,
+
+        description:
+            base.description,
+
+        image:
+            base.image,
+
         followers,
         views,
         likes,
@@ -433,710 +1211,3056 @@ function extractPublicMetrics(html) {
    URL PARSERS
 ============================================================================ */
 
-function parseYouTube(rawUrl) {
+function parseYouTube(
+    rawUrl
+) {
     try {
-        const u = new URL(rawUrl);
-        const hostname = u.hostname.replace(/^www\./, '').toLowerCase();
-        if (!['youtube.com', 'm.youtube.com', 'youtu.be'].includes(hostname)) return null;
-        const pathname = u.pathname.replace(/\/+$/, '');
-        const handle = pathname.match(/^\/@([^/?&#]+)$/i);
-        if (handle) return { type: 'handle', value: handle[1] };
-        const channel = pathname.match(/^\/channel\/(UC[^/?&#]+)$/i);
-        if (channel) return { type: 'id', value: channel[1] };
-        const user = pathname.match(/^\/user\/([^/?&#]+)$/i);
-        if (user) return { type: 'forUsername', value: user[1] };
+        const u =
+            new URL(rawUrl);
+
+        const hostname =
+            u.hostname
+                .replace(/^www\./, '')
+                .toLowerCase();
+
+        if (
+            hostname !== 'youtube.com' &&
+            hostname !== 'm.youtube.com' &&
+            hostname !== 'youtu.be'
+        ) {
+            return null;
+        }
+
+        const pathname =
+            u.pathname.replace(
+                /\/+$/,
+                ''
+            );
+
+        const handle =
+            pathname.match(
+                /^\/@([^/?&#]+)$/i
+            );
+
+        if (handle) {
+            return {
+                type: 'handle',
+                value: handle[1]
+            };
+        }
+
+        const channel =
+            pathname.match(
+                /^\/channel\/(UC[^/?&#]+)$/i
+            );
+
+        if (channel) {
+            return {
+                type: 'id',
+                value: channel[1]
+            };
+        }
+
+        const user =
+            pathname.match(
+                /^\/user\/([^/?&#]+)$/i
+            );
+
+        if (user) {
+            return {
+                type: 'forUsername',
+                value: user[1]
+            };
+        }
+
+        const custom =
+            pathname.match(
+                /^\/c\/([^/?&#]+)$/i
+            );
+
+        if (custom) {
+            return {
+                type: 'search',
+                value: custom[1]
+            };
+        }
+
+        const bare =
+            pathname.match(
+                /^\/([^/?&#]+)$/i
+            );
+
+        if (
+            bare &&
+            ![
+                'watch',
+                'playlist',
+                'shorts',
+                'feed',
+                'results',
+                'gaming'
+            ].includes(
+                bare[1].toLowerCase()
+            )
+        ) {
+            return {
+                type: 'search',
+                value: bare[1]
+            };
+        }
+
+    } catch {
         return null;
-    } catch { return null; }
+    }
+
+    return null;
 }
 
-function parseInstagramUsername(rawUrl) {
+function parseTwitterUsername(
+    rawUrl
+) {
     try {
-        const u = new URL(rawUrl);
-        const first = u.pathname.replace(/^\/+|\/+$/g, '').split('/')[0];
-        if (!first) return null;
-        if (['accounts', 'explore', 'reels', 'direct', 'p', 'stories'].includes(first.toLowerCase())) return null;
-        return first.replace(/^@/, '');
-    } catch { return null; }
+        const u =
+            new URL(rawUrl);
+
+        const hostname =
+            u.hostname
+                .replace(/^www\./, '')
+                .toLowerCase();
+
+        if (
+            hostname !== 'twitter.com' &&
+            hostname !== 'x.com'
+        ) {
+            return null;
+        }
+
+        const pathname =
+            u.pathname.replace(
+                /^\/+|\/+$/g,
+                ''
+            );
+
+        if (!pathname) {
+            return null;
+        }
+
+        const username =
+            pathname.split('/')[0];
+
+        if (
+            [
+                'home',
+                'explore',
+                'notifications',
+                'messages',
+                'i',
+                'search',
+                'settings'
+            ].includes(
+                username.toLowerCase()
+            )
+        ) {
+            return null;
+        }
+
+        return username.replace(
+            /^@/,
+            ''
+        );
+
+    } catch {
+        return null;
+    }
 }
 
-function parseFacebookId(rawUrl) {
+function parseFacebookId(
+    rawUrl
+) {
     try {
-        const u = new URL(rawUrl);
-        const id = u.searchParams.get('id');
-        if (id) return id;
-        const pathname = u.pathname.replace(/^\/+|\/+$/g, '');
-        if (!pathname) return null;
-        const pieces = pathname.split('/');
-        if (pieces[0].toLowerCase() === 'pages' && pieces[1]) return pieces[2] || pieces[1];
-        if (['groups', 'events', 'watch', 'login', 'share', 'sharer', 'reel'].includes(pieces[0].toLowerCase())) return null;
+        const u =
+            new URL(rawUrl);
+
+        const id =
+            u.searchParams.get('id');
+
+        if (id) {
+            return id;
+        }
+
+        const pathname =
+            u.pathname.replace(
+                /^\/+|\/+$/g,
+                ''
+            );
+
+        if (!pathname) {
+            return null;
+        }
+
+        const pieces =
+            pathname.split('/');
+
+        if (
+            pieces[0].toLowerCase() === 'pages' &&
+            pieces[1]
+        ) {
+            return pieces[2] || pieces[1];
+        }
+
+        if (
+            [
+                'groups',
+                'events',
+                'watch',
+                'login',
+                'share',
+                'sharer',
+                'reel'
+            ].includes(
+                pieces[0].toLowerCase()
+            )
+        ) {
+            return null;
+        }
+
         return pieces[0];
-    } catch { return null; }
+
+    } catch {
+        return null;
+    }
 }
 
-function parseTwitterUsername(rawUrl) {
+function parseInstagramUsername(
+    rawUrl
+) {
     try {
-        const u = new URL(rawUrl);
-        const hostname = u.hostname.replace(/^www\./, '').toLowerCase();
-        if (!['twitter.com', 'x.com'].includes(hostname)) return null;
-        const pathname = u.pathname.replace(/^\/+|\/+$/g, '');
-        if (!pathname) return null;
-        const username = pathname.split('/')[0];
-        if (['home', 'explore', 'notifications', 'messages', 'i', 'search', 'settings'].includes(username.toLowerCase())) return null;
-        return username.replace(/^@/, '');
-    } catch { return null; }
+        const u =
+            new URL(rawUrl);
+
+        const first =
+            u.pathname
+                .replace(
+                    /^\/+|\/+$/g,
+                    ''
+                )
+                .split('/')[0];
+
+        if (!first) {
+            return null;
+        }
+
+        if (
+            [
+                'accounts',
+                'explore',
+                'reels',
+                'direct',
+                'p',
+                'stories'
+            ].includes(
+                first.toLowerCase()
+            )
+        ) {
+            return null;
+        }
+
+        return first.replace(
+            /^@/,
+            ''
+        );
+
+    } catch {
+        return null;
+    }
 }
 
-function parseLinkedInOrg(rawUrl) {
+function parseLinkedInOrg(
+    rawUrl
+) {
     try {
-        const u = new URL(rawUrl);
-        const match = u.pathname.match(/^\/company\/([^/?&#]+)/i);
-        return match ? match[1] : null;
-    } catch { return null; }
+        const u =
+            new URL(rawUrl);
+
+        const match =
+            u.pathname.match(
+                /^\/company\/([^/?&#]+)/i
+            );
+
+        return match
+            ? match[1]
+            : null;
+
+    } catch {
+        return null;
+    }
 }
 
-function parseTikTokUsername(rawUrl) {
+function parseTikTokUsername(
+    rawUrl
+) {
     try {
-        const u = new URL(rawUrl);
-        const match = u.pathname.match(/^\/@([^/?&#]+)/i);
-        return match ? match[1] : null;
-    } catch { return null; }
+        const u =
+            new URL(rawUrl);
+
+        const match =
+            u.pathname.match(
+                /^\/@([^/?&#]+)/i
+            );
+
+        return match
+            ? match[1]
+            : null;
+
+    } catch {
+        return null;
+    }
 }
+
 
 /* ============================================================================
-   PLATFORM FETCHERS (ALL USING HTML SCRAPING)
+   YOUTUBE
 ============================================================================ */
 
-async function fetchYouTube(profileUrl) {
-    const parsed = parseYouTube(profileUrl);
-    if (!parsed) {
-        return createMetricResult('YouTube Channel', 'invalid_url', 'Could not parse YouTube URL');
-    }
+async function fetchYouTube(
+    profileUrl,
+    apiKey
+) {
+    /*
+     * First try the official YouTube API.
+     */
+    if (apiKey) {
+        const parsed =
+            parseYouTube(
+                profileUrl
+            );
 
-    const page = await fetchPublicPage(profileUrl);
-    if (!page.ok) {
-        return createMetricResult('YouTube Channel', 'unavailable', page.error || 'Could not retrieve YouTube page');
-    }
+        if (parsed) {
+            const params =
+                new URLSearchParams();
 
-    const metrics = extractPublicMetrics(page.html);
-    
-    // YouTube-specific extraction
-    let followers = metrics.followers;
-    let posts = metrics.posts;
-    let views = metrics.views;
+            params.set(
+                'part',
+                'snippet,statistics'
+            );
 
-    // Try YouTube-specific patterns
-    if (!followers) {
-        const match = page.html.match(/"subscriberCountText"[\s\S]{0,500}?"simpleText"\s*:\s*"([^"]+)"/i);
-        if (match) followers = parseMetric(match[1]);
-    }
-    if (!posts) {
-        const match = page.html.match(/"videoCountText"[\s\S]{0,500}?"simpleText"\s*:\s*"([^"]+)"/i);
-        if (match) posts = parseMetric(match[1]);
-    }
+            params.set(
+                'key',
+                apiKey
+            );
 
-    return createMetricResult(metrics.name || 'YouTube Channel', 'ok', null, {
-        followers: followers || 0,
-        views: views || 0,
-        likes: 0,
-        posts: posts || 0
-    }, true);
-}
-
-async function fetchInstagram(profileUrl) {
-    const username = parseInstagramUsername(profileUrl);
-    if (!username) {
-        return createMetricResult('Instagram Profile', 'invalid_url', 'Could not parse Instagram URL');
-    }
-
-    const page = await fetchPublicPage(profileUrl);
-    if (!page.ok) {
-        return createMetricResult(`@${username}`, 'unavailable', page.error || 'Could not retrieve Instagram page');
-    }
-
-    const metrics = extractPublicMetrics(page.html);
-    
-    // Instagram-specific: try to extract from JSON
-    let followers = metrics.followers;
-    let posts = metrics.posts;
-    let name = metrics.name || `@${username}`;
-
-    // Try to find in script tags
-    const scriptMatch = page.html.match(/window\._sharedData\s*=\s*({.*?});/s);
-    if (scriptMatch) {
-        try {
-            const data = JSON.parse(scriptMatch[1]);
-            const user = data?.entry_data?.ProfilePage?.[0]?.graphql?.user;
-            if (user) {
-                if (user.followers_count) followers = user.followers_count;
-                if (user.media_count) posts = user.media_count;
-                if (user.full_name) name = user.full_name;
+            if (
+                parsed.type === 'id'
+            ) {
+                params.set(
+                    'id',
+                    parsed.value
+                );
             }
-        } catch {}
-    }
 
-    return createMetricResult(name, 'ok', null, {
-        followers: followers || 0,
-        views: 0,
-        likes: 0,
-        posts: posts || 0
-    }, followers > 0 || posts > 0);
-}
-
-async function fetchFacebook(profileUrl) {
-    const pageId = parseFacebookId(profileUrl);
-    if (!pageId) {
-        return createMetricResult('Facebook Page', 'invalid_url', 'Could not parse Facebook URL');
-    }
-
-    const page = await fetchPublicPage(profileUrl);
-    if (!page.ok) {
-        return createMetricResult('Facebook Page', 'unavailable', page.error || 'Could not retrieve Facebook page');
-    }
-
-    const metrics = extractPublicMetrics(page.html);
-    
-    // Facebook-specific: try to extract from JSON
-    let followers = metrics.followers;
-    let likes = metrics.likes;
-    let posts = metrics.posts;
-    let name = metrics.name || 'Facebook Page';
-
-    // Try to find page info in JSON
-    const jsonMatch = page.html.match(/<script[^>]*>window\.__initialData\s*=\s*({.*?});?<\/script>/s);
-    if (jsonMatch) {
-        try {
-            const data = JSON.parse(jsonMatch[1]);
-            const pageInfo = data?.entities?.[pageId] || data?.data?.[pageId];
-            if (pageInfo) {
-                if (pageInfo.name) name = pageInfo.name;
-                if (pageInfo.followers_count) followers = pageInfo.followers_count;
-                if (pageInfo.fan_count && !followers) followers = pageInfo.fan_count;
+            else if (
+                parsed.type === 'handle'
+            ) {
+                params.set(
+                    'forHandle',
+                    parsed.value
+                );
             }
-        } catch {}
-    }
 
-    return createMetricResult(name, 'ok', null, {
-        followers: followers || 0,
-        views: 0,
-        likes: likes || 0,
-        posts: posts || 0
-    }, followers > 0 || posts > 0 || likes > 0);
-}
-
-async function fetchTwitter(profileUrl) {
-    const username = parseTwitterUsername(profileUrl);
-    if (!username) {
-        return createMetricResult('Twitter Profile', 'invalid_url', 'Could not parse Twitter URL');
-    }
-
-    const page = await fetchPublicPage(profileUrl);
-    if (!page.ok) {
-        return createMetricResult(`@${username}`, 'unavailable', page.error || 'Could not retrieve Twitter page');
-    }
-
-    const metrics = extractPublicMetrics(page.html);
-    
-    let followers = metrics.followers;
-    let likes = metrics.likes;
-    let posts = metrics.posts;
-    let name = metrics.name || `@${username}`;
-
-    // Twitter-specific: try to extract from JSON
-    const jsonMatch = page.html.match(/<script[^>]*>window\.__INITIAL_STATE__\s*=\s*({.*?});?<\/script>/s);
-    if (jsonMatch) {
-        try {
-            const data = JSON.parse(jsonMatch[1]);
-            const user = data?.users?.[username] || data?.entities?.users?.[username];
-            if (user) {
-                if (user.followers_count) followers = user.followers_count;
-                if (user.statuses_count) posts = user.statuses_count;
-                if (user.favourites_count) likes = user.favourites_count;
-                if (user.name) name = user.name;
+            else if (
+                parsed.type === 'forUsername'
+            ) {
+                params.set(
+                    'forUsername',
+                    parsed.value
+                );
             }
-        } catch {}
-    }
 
-    return createMetricResult(name, 'ok', null, {
-        followers: followers || 0,
-        views: 0,
-        likes: likes || 0,
-        posts: posts || 0
-    }, followers > 0 || posts > 0);
-}
+            else if (
+                parsed.type === 'search'
+            ) {
+                const searchParams =
+                    new URLSearchParams();
 
-async function fetchLinkedIn(profileUrl) {
-    const page = await fetchPublicPage(profileUrl);
-    if (!page.ok) {
-        return createMetricResult('LinkedIn Profile', 'unavailable', page.error || 'Could not retrieve LinkedIn page');
-    }
+                searchParams.set(
+                    'part',
+                    'snippet'
+                );
 
-    const metrics = extractPublicMetrics(page.html);
-    
-    let followers = metrics.followers;
-    let name = metrics.name || 'LinkedIn Profile';
+                searchParams.set(
+                    'type',
+                    'channel'
+                );
 
-    // LinkedIn-specific extraction
-    if (!followers) {
-        const match = page.html.match(/"followersCount"\s*:\s*(\d+)/i);
-        if (match) followers = parseInt(match[1]);
-    }
+                searchParams.set(
+                    'maxResults',
+                    '5'
+                );
 
-    return createMetricResult(name, 'ok', null, {
-        followers: followers || 0,
-        views: 0,
-        likes: 0,
-        posts: 0
-    }, followers > 0);
-}
+                searchParams.set(
+                    'q',
+                    parsed.value
+                );
 
-async function fetchTikTok(profileUrl) {
-    const username = parseTikTokUsername(profileUrl);
-    if (!username) {
-        return createMetricResult('TikTok Profile', 'invalid_url', 'Could not parse TikTok URL');
-    }
+                searchParams.set(
+                    'key',
+                    apiKey
+                );
 
-    const page = await fetchPublicPage(profileUrl);
-    if (!page.ok) {
-        return createMetricResult(`@${username}`, 'unavailable', page.error || 'Could not retrieve TikTok page');
-    }
+                const searchRes =
+                    await apiGet(
+                        `https://www.googleapis.com/youtube/v3/search?${searchParams.toString()}`
+                    );
 
-    const metrics = extractPublicMetrics(page.html);
-    
-    let followers = metrics.followers;
-    let likes = metrics.likes;
-    let posts = metrics.posts;
-    let name = metrics.name || `@${username}`;
+                if (
+                    searchRes.status === 200
+                ) {
+                    const result =
+                        searchRes.body
+                            ?.items?.[0];
 
-    // TikTok-specific extraction
-    const jsonMatch = page.html.match(/<script[^>]*>window\.__INITIAL_STATE__\s*=\s*({.*?});?<\/script>/s);
-    if (jsonMatch) {
-        try {
-            const data = JSON.parse(jsonMatch[1]);
-            const user = data?.userInfo?.user || data?.user;
-            if (user) {
-                if (user.followerCount) followers = user.followerCount;
-                if (user.videoCount) posts = user.videoCount;
-                if (user.heartCount) likes = user.heartCount;
-                if (user.nickname) name = user.nickname;
+                    const channelId =
+                        result?.snippet?.channelId ||
+                        result?.id?.channelId;
+
+                    if (channelId) {
+                        params.set(
+                            'id',
+                            channelId
+                        );
+                    }
+                }
             }
-        } catch {}
+
+            if (
+                params.has('id') ||
+                params.has('forHandle') ||
+                params.has('forUsername')
+            ) {
+                const response =
+                    await apiGet(
+                        `https://www.googleapis.com/youtube/v3/channels?${params.toString()}`
+                    );
+
+                if (
+                    response.status === 200
+                ) {
+                    const item =
+                        response.body
+                            ?.items?.[0];
+
+                    if (item) {
+                        const statistics =
+                            item.statistics || {};
+
+                        const followers =
+                            toNumber(
+                                statistics.subscriberCount
+                            );
+
+                        const views =
+                            toNumber(
+                                statistics.viewCount
+                            );
+
+                        const posts =
+                            toNumber(
+                                statistics.videoCount
+                            );
+
+                        return {
+                            status: 'ok',
+                            source: 'youtube_api',
+
+                            name:
+                                item.snippet?.title ||
+                                'YouTube Channel',
+
+                            followers,
+                            views,
+                            likes: 0,
+                            posts,
+
+                            engagement:
+                                followers > 0 &&
+                                views > 0
+                                    ? round(
+                                        (
+                                            views /
+                                            followers
+                                        ) * 100,
+                                        2
+                                    )
+                                    : 0
+                        };
+                    }
+                }
+            }
+        }
     }
 
-    return createMetricResult(name, 'ok', null, {
-        followers: followers || 0,
-        views: 0,
-        likes: likes || 0,
-        posts: posts || 0
-    }, followers > 0 || posts > 0);
-}
+    /*
+     * No API key, or API lookup failed.
+     * Actually fetch the URL.
+     */
+    const page =
+        await fetchPublicPage(
+            profileUrl
+        );
 
-/* ============================================================================
-   METRIC RESULT HELPER
-============================================================================ */
+    if (!page.ok) {
+        return {
+            status: 'unavailable',
+            source: 'public_url',
+            error:
+                page.error ||
+                'Could not retrieve YouTube profile URL'
+        };
+    }
 
-function createMetricResult(name, status, error = null, metrics = null, hasData = false) {
-    const result = {
-        status: status,
-        source: 'html_scrape',
-        name: name || 'Profile'
+    const metrics =
+        extractPublicMetrics(
+            page.html,
+            'youtube'
+        );
+
+    if (
+        !metrics.followers &&
+        !metrics.views &&
+        !metrics.posts
+    ) {
+        return {
+            status: 'partial',
+            source: 'public_url',
+
+            name:
+                metrics.name ||
+                'YouTube Channel',
+
+            followers: 0,
+            views: 0,
+            likes: 0,
+            posts: 0,
+            engagement: 0,
+
+            error:
+                'YouTube loaded the public page, but usable channel statistics were not publicly exposed. Add YOUTUBE_API_KEY for reliable statistics.'
+        };
+    }
+
+    return {
+        status: 'ok',
+        source: 'public_url',
+
+        name:
+            metrics.name ||
+            'YouTube Channel',
+
+        followers:
+            metrics.followers,
+
+        views:
+            metrics.views,
+
+        likes:
+            metrics.likes,
+
+        posts:
+            metrics.posts,
+
+        engagement:
+            metrics.followers > 0 &&
+            metrics.views > 0
+                ? round(
+                    (
+                        metrics.views /
+                        metrics.followers
+                    ) * 100,
+                    2
+                )
+                : 0
     };
+}
 
-    if (error) {
-        result.error = error;
+/* ============================================================================
+   TWITTER / X
+============================================================================ */
+
+async function fetchTwitter(
+    profileUrl,
+    bearerToken
+) {
+    const username =
+        parseTwitterUsername(
+            profileUrl
+        );
+
+    if (!username) {
+        return {
+            status: 'invalid_url',
+            error:
+                'Cannot parse X/Twitter profile URL'
+        };
     }
 
-    if (metrics) {
-        result.metrics = {
-            followers: { value: metrics.followers || 0, available: metrics.followers > 0 },
-            views: { value: metrics.views || 0, available: metrics.views > 0 },
-            likes: { value: metrics.likes || 0, available: metrics.likes > 0 },
-            posts: { value: metrics.posts || 0, available: metrics.posts > 0 }
-        };
-        result.has_data = hasData;
-    } else {
-        result.metrics = {
-            followers: { value: 0, available: false },
-            views: { value: 0, available: false },
-            likes: { value: 0, available: false },
-            posts: { value: 0, available: false }
-        };
-        result.has_data = false;
+    /*
+     * Official API first.
+     */
+    if (bearerToken) {
+        const endpoint =
+            `https://api.twitter.com/2/users/by/username/` +
+            `${encodeURIComponent(username)}` +
+            `?user.fields=${encodeURIComponent(
+                'public_metrics,name,username,description'
+            )}`;
+
+        const response =
+            await apiGet(
+                endpoint,
+                {
+                    Authorization:
+                        `Bearer ${bearerToken}`
+                }
+            );
+
+        if (
+            response.status === 200 &&
+            response.body?.data
+        ) {
+            const data =
+                response.body.data;
+
+            const metrics =
+                data.public_metrics || {};
+
+            const followers =
+                toNumber(
+                    metrics.followers_count
+                );
+
+            const posts =
+                toNumber(
+                    metrics.tweet_count
+                );
+
+            const likes =
+                toNumber(
+                    metrics.like_count
+                );
+
+            return {
+                status: 'ok',
+                source: 'x_api',
+
+                name:
+                    data.name ||
+                    data.username ||
+                    username,
+
+                followers,
+                views: 0,
+                likes,
+                posts,
+
+                engagement:
+                    followers > 0
+                        ? round(
+                            (
+                                likes /
+                                followers
+                            ) * 100,
+                            2
+                        )
+                        : 0
+            };
+        }
     }
 
-    return result;
+    /*
+     * Public URL fallback.
+     */
+    const page =
+        await fetchPublicPage(
+            profileUrl
+        );
+
+    if (!page.ok) {
+        return {
+            status: 'unavailable',
+            source: 'public_url',
+            error:
+                page.error ||
+                'Could not retrieve X/Twitter profile'
+        };
+    }
+
+    const metrics =
+        extractPublicMetrics(
+            page.html,
+            'twitter'
+        );
+
+    if (
+        !metrics.followers &&
+        !metrics.likes &&
+        !metrics.posts
+    ) {
+        return {
+            status: 'partial',
+            source: 'public_url',
+
+            name:
+                metrics.name ||
+                `@${username}`,
+
+            followers: 0,
+            views: 0,
+            likes: 0,
+            posts: 0,
+            engagement: 0,
+
+            error:
+                'X/Twitter loaded the profile page, but account statistics were not publicly exposed to the server. Add TWITTER_BEARER for reliable statistics.'
+        };
+    }
+
+    return {
+        status: 'ok',
+        source: 'public_url',
+
+        name:
+            metrics.name ||
+            `@${username}`,
+
+        followers:
+            metrics.followers,
+
+        views:
+            metrics.views,
+
+        likes:
+            metrics.likes,
+
+        posts:
+            metrics.posts,
+
+        engagement:
+            metrics.followers > 0
+                ? round(
+                    (
+                        metrics.likes /
+                        metrics.followers
+                    ) * 100,
+                    2
+                )
+                : 0
+    };
+}
+
+/* ============================================================================
+   FACEBOOK (DIAGNOSTIC VERSION)
+============================================================================ */
+
+async function fetchFacebook(
+    profileUrl,
+    accessToken
+) {
+    try {
+        const pageId =
+            parseFacebookId(
+                profileUrl
+            );
+
+        /*
+         * Official Meta API.
+         */
+        if (
+            accessToken &&
+            pageId
+        ) {
+            try {
+                const fields = [
+                    'id',
+                    'name',
+                    'followers_count',
+                    'fan_count'
+                ].join(',');
+
+                const endpoint =
+                    `https://graph.facebook.com/v23.0/` +
+                    `${encodeURIComponent(pageId)}` +
+                    `?fields=${encodeURIComponent(fields)}` +
+                    `&access_token=${encodeURIComponent(accessToken)}`;
+
+                const response =
+                    await apiGet(
+                        endpoint
+                    );
+
+                if (
+                    response.status === 200 &&
+                    response.body
+                ) {
+                    const page =
+                        response.body;
+
+                    const followers =
+                        toNumber(
+                            page.followers_count ||
+                            page.fan_count
+                        );
+
+                    let likes = 0;
+                    let comments = 0;
+                    let posts = 0;
+
+                    try {
+                        const postsEndpoint =
+                            `https://graph.facebook.com/v23.0/` +
+                            `${encodeURIComponent(page.id || pageId)}` +
+                            `/posts?fields=${encodeURIComponent(
+                                'id,likes.limit(0).summary(true),comments.limit(0).summary(true)'
+                            )}` +
+                            `&limit=25` +
+                            `&access_token=${encodeURIComponent(accessToken)}`;
+
+                        const postsResponse =
+                            await apiGet(
+                                postsEndpoint
+                            );
+
+                        if (
+                            postsResponse.status === 200
+                        ) {
+                            const items =
+                                postsResponse.body?.data ||
+                                [];
+
+                            posts =
+                                items.length;
+
+                            for (
+                                const post
+                                of items
+                            ) {
+                                likes +=
+                                    toNumber(
+                                        post.likes
+                                            ?.summary
+                                            ?.total_count
+                                    );
+
+                                comments +=
+                                    toNumber(
+                                        post.comments
+                                            ?.summary
+                                            ?.total_count
+                                    );
+                            }
+                        } else {
+                            // Posts fetch failed – we'll still return page info
+                            console.warn(`[Facebook] Posts fetch failed for page ${pageId}, status ${postsResponse.status}`);
+                            posts = -1;
+                        }
+                    } catch (postsErr) {
+                        console.error(`[Facebook] Posts fetch exception:`, postsErr.message);
+                        posts = -1;
+                    }
+
+                    const interactions =
+                        likes + comments;
+
+                    return {
+                        status: 'ok',
+                        source: 'meta_api',
+
+                        name:
+                            page.name ||
+                            'Facebook Page',
+
+                        followers,
+                        views: 0,
+                        likes,
+                        posts: posts === -1 ? -1 : posts,
+                        posts_available: posts !== -1,
+
+                        engagement:
+                            followers > 0 &&
+                            posts > 0
+                                ? round(
+                                    (
+                                        interactions /
+                                        posts /
+                                        followers
+                                    ) * 100,
+                                    2
+                                )
+                                : 0
+                    };
+                } else {
+                    // API call returned non-200
+                    const errorMsg = response.body?.error?.message || 'No error message';
+                    console.warn(`[Facebook] Meta API returned status ${response.status}: ${errorMsg}`);
+                    // Fall through to public extraction
+                }
+            } catch (apiErr) {
+                console.error(`[Facebook] Meta API exception:`, apiErr.message);
+                // Fall through to public extraction
+            }
+        }
+
+        /*
+         * Public URL fallback (with diagnostics).
+         */
+        try {
+            const page =
+                await fetchPublicPage(
+                    profileUrl
+                );
+
+            if (!page.ok) {
+                return {
+                    status: 'diagnostic_error',
+                    source: 'public_url',
+                    step: 'fetchPublicPage',
+                    http_status: page.status || 0,
+                    error: page.error || 'Failed to retrieve Facebook public page',
+                    name: 'Facebook Page',
+                    followers: 0,
+                    views: 0,
+                    likes: 0,
+                    posts: -1,
+                    posts_available: false,
+                    engagement: 0
+                };
+            }
+
+            try {
+                const metrics =
+                    extractPublicMetrics(
+                        page.html,
+                        'facebook'
+                    );
+
+                if (
+                    !metrics.followers &&
+                    !metrics.likes &&
+                    !metrics.posts
+                ) {
+                    return {
+                        status: 'partial',
+                        source: 'public_url',
+                        name: metrics.name || 'Facebook Page',
+                        followers: 0,
+                        views: 0,
+                        likes: 0,
+                        posts: -1,
+                        posts_available: false,
+                        engagement: 0
+                    };
+                }
+
+                return {
+                    status: 'ok',
+                    source: 'public_url',
+
+                    name:
+                        metrics.name ||
+                        'Facebook Page',
+
+                    followers:
+                        metrics.followers,
+
+                    views:
+                        metrics.views,
+
+                    likes:
+                        metrics.likes,
+
+                    posts:
+                        metrics.posts,
+
+                    posts_available: true,
+
+                    engagement:
+                        metrics.followers > 0 &&
+                        metrics.posts > 0
+                            ? round(
+                                (
+                                    metrics.likes /
+                                    metrics.posts /
+                                    metrics.followers
+                                ) * 100,
+                                2
+                            )
+                            : 0
+                };
+            } catch (extractErr) {
+                console.error(`[Facebook] extractPublicMetrics exception:`, extractErr.message);
+                return {
+                    status: 'diagnostic_error',
+                    source: 'public_url',
+                    step: 'extractPublicMetrics',
+                    error: extractErr.message || 'Failed to extract metrics from public HTML',
+                    name: 'Facebook Page',
+                    followers: 0,
+                    views: 0,
+                    likes: 0,
+                    posts: -1,
+                    posts_available: false,
+                    engagement: 0
+                };
+            }
+        } catch (publicErr) {
+            console.error(`[Facebook] Public fetch fallback exception:`, publicErr.message);
+            return {
+                status: 'diagnostic_error',
+                source: 'public_url',
+                step: 'fetchPublicPage',
+                error: publicErr.message || 'Failed to fetch public Facebook page',
+                name: 'Facebook Page',
+                followers: 0,
+                views: 0,
+                likes: 0,
+                posts: -1,
+                posts_available: false,
+                engagement: 0
+            };
+        }
+    } catch (generalErr) {
+        console.error(`[Facebook] Unhandled exception:`, generalErr.message);
+        return {
+            status: 'diagnostic_error',
+            source: 'unknown',
+            step: 'general',
+            error: generalErr.message || 'Unknown Facebook error',
+            name: 'Facebook Page',
+            followers: 0,
+            views: 0,
+            likes: 0,
+            posts: -1,
+            posts_available: false,
+            engagement: 0
+        };
+    }
+}
+
+/* ============================================================================
+   INSTAGRAM
+============================================================================ */
+
+async function fetchInstagram(
+    profileUrl,
+    accessToken
+) {
+    const username =
+        parseInstagramUsername(
+            profileUrl
+        );
+
+    if (!username) {
+        return {
+            status: 'invalid_url',
+            error:
+                'Cannot parse Instagram profile URL'
+        };
+    }
+
+    /*
+     * If a Meta token is available, try the connected professional account.
+     */
+    if (accessToken) {
+        const pagesEndpoint =
+            `https://graph.facebook.com/v23.0/me/accounts` +
+            `?fields=id,name,access_token` +
+            `&limit=100` +
+            `&access_token=${encodeURIComponent(accessToken)}`;
+
+        const pagesResponse =
+            await apiGet(
+                pagesEndpoint
+            );
+
+        if (
+            pagesResponse.status === 200
+        ) {
+            const pages =
+                pagesResponse.body?.data ||
+                [];
+
+            for (
+                const page
+                of pages
+            ) {
+                const pageToken =
+                    page.access_token ||
+                    accessToken;
+
+                const relationshipEndpoint =
+                    `https://graph.facebook.com/v23.0/` +
+                    `${encodeURIComponent(page.id)}` +
+                    `?fields=instagram_business_account` +
+                    `&access_token=${encodeURIComponent(pageToken)}`;
+
+                const relationshipResponse =
+                    await apiGet(
+                        relationshipEndpoint
+                    );
+
+                if (
+                    relationshipResponse.status !== 200
+                ) {
+                    continue;
+                }
+
+                const igId =
+                    relationshipResponse.body
+                        ?.instagram_business_account
+                        ?.id;
+
+                if (!igId) {
+                    continue;
+                }
+
+                const fields = [
+                    'id',
+                    'username',
+                    'name',
+                    'followers_count',
+                    'media_count'
+                ].join(',');
+
+                const accountEndpoint =
+                    `https://graph.facebook.com/v23.0/` +
+                    `${encodeURIComponent(igId)}` +
+                    `?fields=${encodeURIComponent(fields)}` +
+                    `&access_token=${encodeURIComponent(pageToken)}`;
+
+                const accountResponse =
+                    await apiGet(
+                        accountEndpoint
+                    );
+
+                if (
+                    accountResponse.status !== 200
+                ) {
+                    continue;
+                }
+
+                const account =
+                    accountResponse.body || {};
+
+                if (
+                    account.username &&
+                    account.username.toLowerCase() !==
+                    username.toLowerCase()
+                ) {
+                    continue;
+                }
+
+                const followers =
+                    toNumber(
+                        account.followers_count
+                    );
+
+                const posts =
+                    toNumber(
+                        account.media_count
+                    );
+
+                let likes = 0;
+                let comments = 0;
+                let mediaCount = 0;
+
+                const mediaEndpoint =
+                    `https://graph.facebook.com/v23.0/` +
+                    `${encodeURIComponent(igId)}` +
+                    `/media?fields=${encodeURIComponent(
+                        'id,like_count,comments_count'
+                    )}` +
+                    `&limit=25` +
+                    `&access_token=${encodeURIComponent(pageToken)}`;
+
+                const mediaResponse =
+                    await apiGet(
+                        mediaEndpoint
+                    );
+
+                if (
+                    mediaResponse.status === 200
+                ) {
+                    const media =
+                        mediaResponse.body?.data ||
+                        [];
+
+                    mediaCount =
+                        media.length;
+
+                    for (
+                        const item
+                        of media
+                    ) {
+                        likes +=
+                            toNumber(
+                                item.like_count
+                            );
+
+                        comments +=
+                            toNumber(
+                                item.comments_count
+                            );
+                    }
+                }
+
+                const interactions =
+                    likes + comments;
+
+                return {
+                    status: 'ok',
+                    source: 'instagram_meta_api',
+
+                    name:
+                        account.name ||
+                        account.username ||
+                        username,
+
+                    followers,
+                    views: 0,
+                    likes,
+                    posts,
+
+                    engagement:
+                        followers > 0 &&
+                        mediaCount > 0
+                            ? round(
+                                (
+                                    interactions /
+                                    mediaCount /
+                                    followers
+                                ) * 100,
+                                2
+                            )
+                            : 0
+                };
+            }
+        }
+    }
+
+    /*
+     * Public Instagram URL fallback.
+     */
+    const page =
+        await fetchPublicPage(
+            profileUrl
+        );
+
+    if (!page.ok) {
+        return {
+            status: 'unavailable',
+            source: 'public_url',
+            error:
+                page.error ||
+                'Could not retrieve Instagram profile'
+        };
+    }
+
+    const metrics =
+        extractPublicMetrics(
+            page.html,
+            'instagram'
+        );
+
+    if (
+        !metrics.followers &&
+        !metrics.likes &&
+        !metrics.posts
+    ) {
+        return {
+            status: 'partial',
+            source: 'public_url',
+
+            name:
+                metrics.name ||
+                `@${username}`,
+
+            followers: 0,
+            views: 0,
+            likes: 0,
+            posts: 0,
+            engagement: 0,
+
+            error:
+                'Instagram loaded the profile URL, but statistics were not publicly exposed to the server. Add an Instagram/Meta access token for professional-account statistics.'
+        };
+    }
+
+    return {
+        status: 'ok',
+        source: 'public_url',
+
+        name:
+            metrics.name ||
+            `@${username}`,
+
+        followers:
+            metrics.followers,
+
+        views:
+            metrics.views,
+
+        likes:
+            metrics.likes,
+
+        posts:
+            metrics.posts,
+
+        engagement:
+            metrics.followers > 0 &&
+            metrics.posts > 0
+                ? round(
+                    (
+                        metrics.likes /
+                        metrics.posts /
+                        metrics.followers
+                    ) * 100,
+                    2
+                )
+                : 0
+    };
+}
+
+/* ============================================================================
+   LINKEDIN (MODIFIED)
+============================================================================ */
+
+async function fetchLinkedIn(
+    profileUrl,
+    accessToken
+) {
+    // Try to extract a company/organization identifier from various URL patterns
+    let vanity = null;
+    try {
+        const u = new URL(profileUrl);
+        const pathSegments = u.pathname.replace(/^\/+|\/+$/g, '').split('/');
+        // Try common patterns: /company/name, /in/name, or just the first segment
+        if (pathSegments.length >= 2 && pathSegments[0].toLowerCase() === 'company') {
+            vanity = pathSegments[1];
+        } else if (pathSegments.length >= 2 && pathSegments[0].toLowerCase() === 'in') {
+            // For personal profiles, we might still try to fetch public page
+            vanity = pathSegments[1];
+        } else if (pathSegments.length === 1 && pathSegments[0]) {
+            vanity = pathSegments[0];
+        }
+    } catch {
+        // fall through to public fetch
+    }
+
+    /*
+     * Official LinkedIn API (only if a vanity name is found and token exists).
+     */
+    if (accessToken && vanity) {
+        const headers = {
+            Authorization:
+                `Bearer ${accessToken}`,
+
+            'LinkedIn-Version':
+                LINKEDIN_VERSION,
+
+            'X-Restli-Protocol-Version':
+                '2.0.0',
+
+            Accept:
+                'application/json'
+        };
+
+        const endpoint =
+            `https://api.linkedin.com/rest/organizations` +
+            `?q=vanityName` +
+            `&vanityName=${encodeURIComponent(vanity)}`;
+
+        const response =
+            await apiGet(
+                endpoint,
+                headers
+            );
+
+        if (
+            response.status === 200
+        ) {
+            const organization =
+                response.body
+                    ?.elements?.[0];
+
+            if (organization) {
+                const orgId =
+                    organization.id;
+
+                let followers = 0;
+
+                /*
+                 * Attempt follower information.
+                 */
+                const followerEndpoint =
+                    `https://api.linkedin.com/v2/networkSizes/` +
+                    `urn%3Ali%3Aorganization%3A${encodeURIComponent(orgId)}` +
+                    `?edgeType=CompanyFollowedByMember`;
+
+                const followerResponse =
+                    await apiGet(
+                        followerEndpoint,
+                        headers
+                    );
+
+                if (
+                    followerResponse.status === 200
+                ) {
+                    followers =
+                        toNumber(
+                            followerResponse.body
+                                ?.firstDegreeSize
+                        );
+                }
+
+                let views = 0;
+                let likes = 0;
+                let posts = 0;
+                let comments = 0;
+                let shares = 0;
+
+                const organizationUrn =
+                    `urn:li:organization:${orgId}`;
+
+                const statsEndpoint =
+                    `https://api.linkedin.com/rest/organizationalEntityShareStatistics` +
+                    `?q=organizationalEntity` +
+                    `&organizationalEntity=${encodeURIComponent(
+                        organizationUrn
+                    )}`;
+
+                const statsResponse =
+                    await apiGet(
+                        statsEndpoint,
+                        headers
+                    );
+
+                if (
+                    statsResponse.status === 200
+                ) {
+                    const elements =
+                        statsResponse.body
+                            ?.elements || [];
+
+                    posts =
+                        elements.length;
+
+                    for (
+                        const element
+                        of elements
+                    ) {
+                        const stats =
+                            element.totalShareStatistics ||
+                            {};
+
+                        views +=
+                            toNumber(
+                                stats.impressionCount
+                            );
+
+                        likes +=
+                            toNumber(
+                                stats.likeCount
+                            );
+
+                        comments +=
+                            toNumber(
+                                stats.commentCount
+                            );
+
+                        shares +=
+                            toNumber(
+                                stats.shareCount
+                            );
+                    }
+                }
+
+                const interactions =
+                    likes +
+                    comments +
+                    shares;
+
+                return {
+                    status: 'ok',
+                    source: 'linkedin_api',
+
+                    name:
+                        organization.localizedName ||
+                        organization.vanityName ||
+                        vanity,
+
+                    followers,
+                    views,
+                    likes,
+                    posts,
+
+                    engagement:
+                        views > 0
+                            ? round(
+                                (
+                                    interactions /
+                                    views
+                                ) * 100,
+                                2
+                            )
+                            : 0
+                };
+            }
+        }
+    }
+
+    /*
+     * Public URL fallback (now always attempted, regardless of vanity detection).
+     */
+    const page =
+        await fetchPublicPage(
+            profileUrl
+        );
+
+    if (!page.ok) {
+        return {
+            status: 'unavailable',
+            source: 'public_url',
+            error:
+                page.error ||
+                'Could not retrieve LinkedIn URL'
+        };
+    }
+
+    const metrics =
+        extractPublicMetrics(
+            page.html,
+            'linkedin'
+        );
+
+    // Return whatever we found, even if incomplete – no strict URL error
+    if (
+        !metrics.followers &&
+        !metrics.likes &&
+        !metrics.views &&
+        !metrics.posts
+    ) {
+        return {
+            status: 'partial',
+            source: 'public_url',
+            name: metrics.name || 'LinkedIn Profile',
+            followers: 0,
+            views: 0,
+            likes: 0,
+            posts: -1,          // unavailable
+            engagement: 0
+        };
+    }
+
+    return {
+        status: 'ok',
+        source: 'public_url',
+
+        name:
+            metrics.name ||
+            'LinkedIn Profile',
+
+        followers:
+            metrics.followers,
+
+        views:
+            metrics.views,
+
+        likes:
+            metrics.likes,
+
+        posts:
+            metrics.posts,
+
+        engagement:
+            metrics.views > 0
+                ? round(
+                    (
+                        metrics.likes /
+                        metrics.views
+                    ) * 100,
+                    2
+                )
+                : 0
+    };
+}
+
+/* ============================================================================
+   TIKTOK
+============================================================================ */
+
+async function fetchTikTok(
+    profileUrl,
+    accessToken
+) {
+    const username =
+        parseTikTokUsername(
+            profileUrl
+        );
+
+    if (!username) {
+        return {
+            status: 'invalid_url',
+            error:
+                'Expected TikTok URL such as https://www.tiktok.com/@username'
+        };
+    }
+
+    /*
+     * Official TikTok API.
+     */
+    if (accessToken) {
+        const fields = [
+            'open_id',
+            'display_name',
+            'username',
+            'follower_count',
+            'following_count',
+            'likes_count',
+            'video_count'
+        ].join(',');
+
+        const endpoint =
+            `https://open.tiktokapis.com/v2/user/info/` +
+            `?fields=${encodeURIComponent(fields)}`;
+
+        const response =
+            await apiGet(
+                endpoint,
+                {
+                    Authorization:
+                        `Bearer ${accessToken}`
+                }
+            );
+
+        if (
+            response.status === 200 &&
+            response.body?.data?.user
+        ) {
+            const user =
+                response.body.data.user;
+
+            const followers =
+                toNumber(
+                    user.follower_count
+                );
+
+            const likes =
+                toNumber(
+                    user.likes_count
+                );
+
+            const posts =
+                toNumber(
+                    user.video_count
+                );
+
+            return {
+                status: 'ok',
+                source: 'tiktok_api',
+
+                name:
+                    user.display_name ||
+                    user.username ||
+                    username,
+
+                followers,
+                views: 0,
+                likes,
+                posts,
+
+                engagement:
+                    followers > 0
+                        ? round(
+                            (
+                                likes /
+                                followers
+                            ) * 100,
+                            2
+                        )
+                        : 0
+            };
+        }
+    }
+
+    /*
+     * Public URL fallback.
+     */
+    const page =
+        await fetchPublicPage(
+            profileUrl
+        );
+
+    if (!page.ok) {
+        return {
+            status: 'unavailable',
+            source: 'public_url',
+            error:
+                page.error ||
+                'Could not retrieve TikTok profile'
+        };
+    }
+
+    const metrics =
+        extractPublicMetrics(
+            page.html,
+            'tiktok'
+        );
+
+    if (
+        !metrics.followers &&
+        !metrics.likes &&
+        !metrics.posts &&
+        !metrics.views
+    ) {
+        return {
+            status: 'partial',
+            source: 'public_url',
+
+            name:
+                metrics.name ||
+                `@${username}`,
+
+            followers: 0,
+            views: 0,
+            likes: 0,
+            posts: 0,
+            engagement: 0,
+
+            error:
+                'TikTok loaded the profile URL, but statistics were not publicly exposed to the server. Add TIKTOK_TOKEN for API statistics.'
+        };
+    }
+
+    return {
+        status: 'ok',
+        source: 'public_url',
+
+        name:
+            metrics.name ||
+            `@${username}`,
+
+        followers:
+            metrics.followers,
+
+        views:
+            metrics.views,
+
+        likes:
+            metrics.likes,
+
+        posts:
+            metrics.posts,
+
+        engagement:
+            metrics.followers > 0
+                ? round(
+                    (
+                        metrics.likes /
+                        metrics.followers
+                    ) * 100,
+                    2
+                )
+                : 0
+    };
 }
 
 /* ============================================================================
    PLATFORM CONFIGURATION
 ============================================================================ */
 
-const PLATFORM_NAMES = ['facebook', 'instagram', 'twitter', 'linkedin', 'youtube', 'tiktok'];
+const PLATFORM_NAMES = [
+    'facebook',
+    'instagram',
+    'twitter',
+    'linkedin',
+    'youtube',
+    'tiktok'
+];
 
 const ALLOWED_HOSTS = {
-    facebook: ['facebook.com'],
-    instagram: ['instagram.com'],
-    twitter: ['twitter.com', 'x.com'],
-    linkedin: ['linkedin.com'],
-    youtube: ['youtube.com', 'youtu.be'],
-    tiktok: ['tiktok.com']
+    facebook: [
+        'facebook.com'
+    ],
+
+    instagram: [
+        'instagram.com'
+    ],
+
+    twitter: [
+        'twitter.com',
+        'x.com'
+    ],
+
+    linkedin: [
+        'linkedin.com'
+    ],
+
+    youtube: [
+        'youtube.com',
+        'youtu.be'
+    ],
+
+    tiktok: [
+        'tiktok.com'
+    ]
 };
 
-function validateProfileUrl(platform, rawUrl) {
-    if (!rawUrl) return null;
+function validateProfileUrl(
+    platform,
+    rawUrl
+) {
+    if (!rawUrl) {
+        return null;
+    }
+
     let parsed;
+
     try {
-        parsed = new URL(rawUrl);
+        parsed =
+            new URL(rawUrl);
     } catch {
         return `Invalid URL for ${platform}`;
     }
-    if (!['http:', 'https:'].includes(parsed.protocol)) {
+
+    if (
+        ![
+            'http:',
+            'https:'
+        ].includes(
+            parsed.protocol
+        )
+    ) {
         return `Invalid protocol for ${platform}`;
     }
-    const hostname = parsed.hostname.replace(/^www\./, '').toLowerCase();
-    const allowed = ALLOWED_HOSTS[platform] || [];
-    const valid = allowed.some(domain => hostname === domain || hostname.endsWith(`.${domain}`));
+
+    const hostname =
+        parsed.hostname
+            .replace(/^www\./, '')
+            .toLowerCase();
+
+    const allowed =
+        ALLOWED_HOSTS[platform] || [];
+
+    const valid =
+        allowed.some(
+            domain =>
+                hostname === domain ||
+                hostname.endsWith(
+                    `.${domain}`
+                )
+        );
+
     if (!valid) {
-        return `URL for ${platform} must be on ${allowed.join(' or ')}`;
+        return (
+            `URL for ${platform} must be on ` +
+            allowed.join(' or ')
+        );
     }
+
     return null;
 }
+
+/* ============================================================================
+   HEALTH
+============================================================================ */
+
+app.get(
+    '/api/health',
+    (req, res) => {
+        res.json({
+            status: 'ok',
+
+            service:
+                'Kiwami Marketing System API',
+
+            version:
+                '3.0.0',
+
+            analytics:
+                'URL retrieval + official API fallback',
+
+            timestamp:
+                new Date().toISOString()
+        });
+    }
+);
 
 /* ============================================================================
    AUTHENTICATION
 ============================================================================ */
 
 function getSessionCookie(req) {
-    const cookieHeader = req.headers.cookie || '';
-    const cookie = cookieHeader.split(';').map(part => part.trim()).find(part => part.startsWith('kiwami_session='));
-    if (!cookie) return '';
-    return cookie.substring('kiwami_session='.length).trim();
-}
+    const cookieHeader =
+        req.headers.cookie || '';
 
-function createSessionCookie(token) {
-    const attributes = ['Path=/', 'HttpOnly', 'SameSite=Lax', `Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`];
-    if (process.env.NODE_ENV === 'production') attributes.push('Secure');
-    return `kiwami_session=${token}; ${attributes.join('; ')}`;
-}
+    const cookie =
+        cookieHeader
+            .split(';')
+            .map(
+                part =>
+                    part.trim()
+            )
+            .find(
+                part =>
+                    part.startsWith(
+                        'kiwami_session='
+                    )
+            );
 
-function clearSessionCookie(res) {
-    const attributes = ['Path=/', 'HttpOnly', 'SameSite=Lax', 'Max-Age=0'];
-    if (process.env.NODE_ENV === 'production') attributes.push('Secure');
-    res.setHeader('Set-Cookie', `kiwami_session=; ${attributes.join('; ')}`);
-}
-
-function requireAuthentication(req, res, next) {
-    const token = getSessionCookie(req);
-    if (!token) return res.status(401).json({ error: 'Authentication required' });
-    const session = sessions.get(token);
-    if (!session || session.expiresAt < Date.now()) {
-        if (token) sessions.delete(token);
-        return res.status(401).json({ error: 'Session expired or invalid' });
+    if (!cookie) {
+        return '';
     }
-    session.expiresAt = Date.now() + SESSION_TTL_MS;
+
+    return cookie
+        .substring(
+            'kiwami_session='.length
+        )
+        .trim();
+}
+
+function createSessionCookie(
+    token
+) {
+    const attributes = [
+        'Path=/',
+        'HttpOnly',
+        'SameSite=Lax',
+        `Max-Age=${Math.floor(
+            SESSION_TTL_MS / 1000
+        )}`
+    ];
+
+    if (
+        process.env.NODE_ENV ===
+        'production'
+    ) {
+        attributes.push(
+            'Secure'
+        );
+    }
+
+    return (
+        `kiwami_session=${token}; ` +
+        attributes.join('; ')
+    );
+}
+
+function clearSessionCookie(
+    res
+) {
+    const attributes = [
+        'Path=/',
+        'HttpOnly',
+        'SameSite=Lax',
+        'Max-Age=0'
+    ];
+
+    if (
+        process.env.NODE_ENV ===
+        'production'
+    ) {
+        attributes.push(
+            'Secure'
+        );
+    }
+
+    res.setHeader(
+        'Set-Cookie',
+        `kiwami_session=; ${attributes.join('; ')}`
+    );
+}
+
+function requireAuthentication(
+    req,
+    res,
+    next
+) {
+    const token =
+        getSessionCookie(req);
+
+    if (!token) {
+        return res
+            .status(401)
+            .json({
+                error:
+                    'Authentication required'
+            });
+    }
+
+    const session =
+        sessions.get(token);
+
+    if (!session) {
+        return res
+            .status(401)
+            .json({
+                error:
+                    'Session expired or invalid'
+            });
+    }
+
+    if (
+        session.expiresAt <
+        Date.now()
+    ) {
+        sessions.delete(token);
+
+        return res
+            .status(401)
+            .json({
+                error:
+                    'Session expired or invalid'
+            });
+    }
+
+    session.expiresAt =
+        Date.now() +
+        SESSION_TTL_MS;
+
     next();
 }
 
 /* ============================================================================
-   ROUTES
+   LOGIN
 ============================================================================ */
 
-app.get('/api/health', (req, res) => {
-    res.json({
-        status: 'ok',
-        service: 'Kiwami Marketing System API',
-        version: '3.0.0',
-        analytics: 'HTML scraping based',
-        timestamp: new Date().toISOString()
-    });
-});
+app.post(
+    '/api/login',
+    (req, res) => {
+        try {
+            const email =
+                safe(
+                    req.body?.email || ''
+                ).toLowerCase();
 
-app.post('/api/login', (req, res) => {
-    try {
-        const email = safe(req.body?.email || '').toLowerCase();
-        const password = safe(req.body?.password || '');
-        const clientIp = getClientIp(req);
-        const now = Date.now();
-        const attempt = loginAttempts.get(clientIp) || { count: 0, resetAt: now };
-        if (attempt.resetAt < now - LOGIN_ATTEMPT_WINDOW_MS) {
-            attempt.count = 0;
-            attempt.resetAt = now;
+            const password =
+                safe(
+                    req.body?.password || ''
+                );
+
+            const clientIp =
+                getClientIp(req);
+
+            const now =
+                Date.now();
+
+            const attempt =
+                loginAttempts.get(
+                    clientIp
+                ) || {
+                    count: 0,
+                    resetAt: now
+                };
+
+            if (
+                attempt.resetAt <
+                now -
+                LOGIN_ATTEMPT_WINDOW_MS
+            ) {
+                attempt.count = 0;
+                attempt.resetAt = now;
+            }
+
+            if (
+                attempt.count >=
+                LOGIN_ATTEMPT_LIMIT
+            ) {
+                return res
+                    .status(429)
+                    .json({
+                        error:
+                            'Too many login attempts. Please try again later.'
+                    });
+            }
+
+            const emailMatches =
+                email === AUTH_EMAIL ||
+                email ===
+                    'kiwamitech.co.ke';
+
+            const passwordMatches =
+                timingSafeEquals(
+                    password,
+                    AUTH_PASSWORD
+                );
+
+            if (
+                !emailMatches ||
+                !passwordMatches
+            ) {
+                attempt.count += 1;
+
+                loginAttempts.set(
+                    clientIp,
+                    attempt
+                );
+
+                return res
+                    .status(401)
+                    .json({
+                        error:
+                            'Invalid credentials. Please try again.'
+                    });
+            }
+
+            loginAttempts.delete(
+                clientIp
+            );
+
+            const token =
+                crypto
+                    .randomBytes(32)
+                    .toString('hex');
+
+            sessions.set(
+                token,
+                {
+                    createdAt: now,
+                    expiresAt:
+                        now +
+                        SESSION_TTL_MS
+                }
+            );
+
+            res.setHeader(
+                'Cache-Control',
+                'no-store'
+            );
+
+            res.setHeader(
+                'Set-Cookie',
+                createSessionCookie(
+                    token
+                )
+            );
+
+            return res.json({
+                success: true,
+                message:
+                    'Login successful'
+            });
+
+        } catch (err) {
+            console.error(
+                'Login error:',
+                err
+            );
+
+            return res
+                .status(500)
+                .json({
+                    error:
+                        'Internal server error'
+                });
         }
-        if (attempt.count >= LOGIN_ATTEMPT_LIMIT) {
-            return res.status(429).json({ error: 'Too many login attempts. Please try again later.' });
-        }
-        const emailMatches = email === AUTH_EMAIL || email === 'kiwamitech.co.ke';
-        const passwordMatches = timingSafeEquals(password, AUTH_PASSWORD);
-        if (!emailMatches || !passwordMatches) {
-            attempt.count += 1;
-            loginAttempts.set(clientIp, attempt);
-            return res.status(401).json({ error: 'Invalid credentials. Please try again.' });
-        }
-        loginAttempts.delete(clientIp);
-        const token = crypto.randomBytes(32).toString('hex');
-        sessions.set(token, { createdAt: now, expiresAt: now + SESSION_TTL_MS });
-        res.setHeader('Cache-Control', 'no-store');
-        res.setHeader('Set-Cookie', createSessionCookie(token));
-        return res.json({ success: true, message: 'Login successful' });
-    } catch (err) {
-        console.error('Login error:', err);
-        return res.status(500).json({ error: 'Internal server error' });
     }
-});
-
-app.get('/api/login-status', (req, res) => {
-    const token = getSessionCookie(req);
-    const session = token ? sessions.get(token) : null;
-    if (!token || !session || session.expiresAt < Date.now()) {
-        if (token) sessions.delete(token);
-        return res.status(401).json({ authenticated: false });
-    }
-    session.expiresAt = Date.now() + SESSION_TTL_MS;
-    res.setHeader('Cache-Control', 'no-store');
-    return res.json({ authenticated: true });
-});
-
-app.post('/api/logout', (req, res) => {
-    const token = getSessionCookie(req);
-    if (token) sessions.delete(token);
-    clearSessionCookie(res);
-    res.setHeader('Cache-Control', 'no-store');
-    return res.json({ success: true, message: 'Logged out' });
-});
+);
 
 /* ============================================================================
-   ANALYTICS ROUTE
+   LOGIN STATUS
 ============================================================================ */
 
-app.post('/api/analytics', requireAuthentication, async (req, res) => {
-    try {
-        const body = req.body || {};
-        const profiles = body.profiles || {};
+app.get(
+    '/api/login-status',
+    (req, res) => {
+        const token =
+            getSessionCookie(req);
 
-        if (typeof profiles !== 'object' || Array.isArray(profiles)) {
-            return res.status(400).json({ error: 'profiles must be an object' });
-        }
+        const session =
+            token
+                ? sessions.get(token)
+                : null;
 
-        // Validate URLs
-        for (const platform of PLATFORM_NAMES) {
-            const profileUrl = profiles[platform];
-            if (!profileUrl) continue;
-            const validationError = validateProfileUrl(platform, profileUrl);
-            if (validationError) {
-                return res.status(400).json({ error: validationError });
+        if (
+            !token ||
+            !session ||
+            session.expiresAt <
+                Date.now()
+        ) {
+            if (token) {
+                sessions.delete(
+                    token
+                );
             }
+
+            return res
+                .status(401)
+                .json({
+                    authenticated:
+                        false
+                });
         }
 
-        // Fetchers - ALL using HTML scraping only
-        const fetchers = {
-            youtube: () => profiles.youtube ? fetchYouTube(profiles.youtube) : { status: 'no_url' },
-            twitter: () => profiles.twitter ? fetchTwitter(profiles.twitter) : { status: 'no_url' },
-            facebook: () => profiles.facebook ? fetchFacebook(profiles.facebook) : { status: 'no_url' },
-            instagram: () => profiles.instagram ? fetchInstagram(profiles.instagram) : { status: 'no_url' },
-            linkedin: () => profiles.linkedin ? fetchLinkedIn(profiles.linkedin) : { status: 'no_url' },
-            tiktok: () => profiles.tiktok ? fetchTikTok(profiles.tiktok) : { status: 'no_url' }
-        };
+        session.expiresAt =
+            Date.now() +
+            SESSION_TTL_MS;
 
-        const results = await Promise.all(
-            PLATFORM_NAMES.map(async platform => {
-                try {
-                    console.log(`[Analytics] Fetching ${platform}: ${profiles[platform] || 'no URL'}`);
-                    const result = await fetchers[platform]();
-                    console.log(`[Analytics] ${platform}: ${result.status}`);
-                    return [platform, result];
-                } catch (err) {
-                    console.error(`[Analytics] ${platform} error:`, err);
-                    return [platform, {
-                        status: 'fetch_error',
-                        error: err?.message || 'Unknown platform error',
-                        name: `${platform.charAt(0).toUpperCase() + platform.slice(1)} Profile`,
-                        metrics: {
-                            followers: { value: 0, available: false },
-                            views: { value: 0, available: false },
-                            likes: { value: 0, available: false },
-                            posts: { value: 0, available: false }
-                        },
-                        has_data: false
-                    }];
-                }
-            })
+        res.setHeader(
+            'Cache-Control',
+            'no-store'
         );
 
-        const platformResults = Object.fromEntries(results);
-
-        // Ensure all platforms exist
-        for (const platform of PLATFORM_NAMES) {
-            if (!platformResults[platform]) {
-                platformResults[platform] = {
-                    status: 'no_url',
-                    name: `${platform.charAt(0).toUpperCase() + platform.slice(1)} Profile`,
-                    metrics: {
-                        followers: { value: 0, available: false },
-                        views: { value: 0, available: false },
-                        likes: { value: 0, available: false },
-                        posts: { value: 0, available: false }
-                    },
-                    has_data: false
-                };
-            }
-        }
-
-        // Aggregate totals
-        let totalFollowers = 0;
-        let totalViews = 0;
-        let totalLikes = 0;
-        let totalPosts = 0;
-
-        for (const platform of PLATFORM_NAMES) {
-            const data = platformResults[platform];
-            if (data?.metrics) {
-                totalFollowers += data.metrics.followers?.value || 0;
-                totalViews += data.metrics.views?.value || 0;
-                totalLikes += data.metrics.likes?.value || 0;
-                totalPosts += data.metrics.posts?.value || 0;
-            }
-        }
-
         return res.json({
-            platforms: platformResults,
-            totalFollowers,
-            totalViews,
-            totalLikes,
-            totalPosts,
-            fetchedAt: new Date().toISOString()
-        });
-
-    } catch (err) {
-        console.error('Analytics route error:', err);
-        return res.status(500).json({
-            error: 'Analytics service failed unexpectedly',
-            details: process.env.NODE_ENV === 'development' ? err.message : undefined
+            authenticated:
+                true
         });
     }
-});
+);
+
+/* ============================================================================
+   LOGOUT
+============================================================================ */
+
+app.post(
+    '/api/logout',
+    (req, res) => {
+        const token =
+            getSessionCookie(req);
+
+        if (token) {
+            sessions.delete(
+                token
+            );
+        }
+
+        clearSessionCookie(
+            res
+        );
+
+        res.setHeader(
+            'Cache-Control',
+            'no-store'
+        );
+
+        return res.json({
+            success: true,
+            message:
+                'Logged out'
+        });
+    }
+);
+
+/* ============================================================================
+   ANALYTICS
+============================================================================ */
+
+app.post(
+    '/api/analytics',
+    requireAuthentication,
+    async (req, res) => {
+        try {
+            const body =
+                req.body || {};
+
+            const profiles =
+                body.profiles || {};
+
+            const apiKeys =
+                body.apiKeys || {};
+
+            if (
+                typeof profiles !==
+                    'object' ||
+                Array.isArray(
+                    profiles
+                )
+            ) {
+                return res
+                    .status(400)
+                    .json({
+                        error:
+                            'profiles must be an object'
+                    });
+            }
+
+            /*
+             * Credentials can come from:
+             *
+             * 1. frontend request
+             * 2. server environment
+             *
+             * Environment variables are preferred.
+             */
+            const keys = {
+                youtube:
+                    safeToken(
+                        process.env.YOUTUBE_API_KEY ||
+                        apiKeys.youtube ||
+                        ''
+                    ),
+
+                twitter:
+                    safeToken(
+                        process.env.TWITTER_BEARER ||
+                        apiKeys.twitter ||
+                        ''
+                    ),
+
+                facebook:
+                    safeToken(
+                        process.env.FB_TOKEN ||
+                        apiKeys.facebook ||
+                        ''
+                    ),
+
+                instagram:
+                    safeToken(
+                        process.env.IG_TOKEN ||
+                        apiKeys.instagram ||
+                        process.env.FB_TOKEN ||
+                        apiKeys.facebook ||
+                        ''
+                    ),
+
+                linkedin:
+                    safeToken(
+                        process.env.LINKEDIN_TOKEN ||
+                        apiKeys.linkedin ||
+                        ''
+                    ),
+
+                tiktok:
+                    safeToken(
+                        process.env.TIKTOK_TOKEN ||
+                        apiKeys.tiktok ||
+                        ''
+                    )
+            };
+
+            /*
+             * Validate every supplied URL.
+             */
+            for (
+                const platform
+                of PLATFORM_NAMES
+            ) {
+                const profileUrl =
+                    profiles[
+                        platform
+                    ];
+
+                if (!profileUrl) {
+                    continue;
+                }
+
+                const validationError =
+                    validateProfileUrl(
+                        platform,
+                        profileUrl
+                    );
+
+                if (
+                    validationError
+                ) {
+                    return res
+                        .status(400)
+                        .json({
+                            error:
+                                validationError
+                        });
+                }
+            }
+
+            /*
+             * Each platform works independently.
+             */
+            const fetchers = {
+                youtube: () =>
+                    profiles.youtube
+                        ? fetchYouTube(
+                            profiles.youtube,
+                            keys.youtube
+                        )
+                        : {
+                            status:
+                                'no_url'
+                        },
+
+                twitter: () =>
+                    profiles.twitter
+                        ? fetchTwitter(
+                            profiles.twitter,
+                            keys.twitter
+                        )
+                        : {
+                            status:
+                                'no_url'
+                        },
+
+                facebook: () =>
+                    profiles.facebook
+                        ? fetchFacebook(
+                            profiles.facebook,
+                            keys.facebook
+                        )
+                        : {
+                            status:
+                                'no_url'
+                        },
+
+                instagram: () =>
+                    profiles.instagram
+                        ? fetchInstagram(
+                            profiles.instagram,
+                            keys.instagram
+                        )
+                        : {
+                            status:
+                                'no_url'
+                        },
+
+                linkedin: () =>
+                    profiles.linkedin
+                        ? fetchLinkedIn(
+                            profiles.linkedin,
+                            keys.linkedin
+                        )
+                        : {
+                            status:
+                                'no_url'
+                        },
+
+                tiktok: () =>
+                    profiles.tiktok
+                        ? fetchTikTok(
+                            profiles.tiktok,
+                            keys.tiktok
+                        )
+                        : {
+                            status:
+                                'no_url'
+                        }
+            };
+
+            const results =
+                await Promise.all(
+                    PLATFORM_NAMES.map(
+                        async platform => {
+                            try {
+                                console.log(
+                                    `[Analytics] Fetching ${platform}: ${profiles[platform] || 'no URL'}`
+                                );
+
+                                const result =
+                                    await fetchers[
+                                        platform
+                                    ]();
+
+                                console.log(
+                                    `[Analytics] ${platform}: ${result.status}`
+                                );
+
+                                return [
+                                    platform,
+                                    result
+                                ];
+
+                            } catch (
+                                err
+                            ) {
+                                console.error(
+                                    `[Analytics] ${platform} error:`,
+                                    err
+                                );
+
+                                return [
+                                    platform,
+                                    {
+                                        status:
+                                            'fetch_error',
+
+                                        error:
+                                            err?.message ||
+                                            'Unknown platform error'
+                                    }
+                                ];
+                            }
+                        }
+                    )
+                );
+
+            const platformResults =
+                Object.fromEntries(
+                    results
+                );
+
+            /*
+             * Make sure all six platforms exist.
+             */
+            for (
+                const platform
+                of PLATFORM_NAMES
+            ) {
+                if (
+                    !platformResults[
+                        platform
+                    ]
+                ) {
+                    platformResults[
+                        platform
+                    ] = {
+                        status:
+                            'no_url'
+                    };
+                }
+            }
+
+            /* ---------------------------------------------------------------
+               AGGREGATE RESULTS
+            ---------------------------------------------------------------- */
+
+            let totalFollowers = 0;
+            let totalViews = 0;
+            let totalLikes = 0;
+            let totalPosts = 0;
+
+            let engagementSum = 0;
+            let engagementCount = 0;
+
+            for (
+                const platform
+                of PLATFORM_NAMES
+            ) {
+                const data =
+                    platformResults[
+                        platform
+                    ];
+
+                if (
+                    !data ||
+                    (
+                        data.status !==
+                        'ok'
+                    )
+                ) {
+                    continue;
+                }
+
+                totalFollowers +=
+                    toNumber(
+                        data.followers
+                    );
+
+                totalViews +=
+                    toNumber(
+                        data.views
+                    );
+
+                totalLikes +=
+                    toNumber(
+                        data.likes
+                    );
+
+                totalPosts +=
+                    toNumber(
+                        data.posts
+                    );
+
+                const engagement =
+                    toNumber(
+                        data.engagement
+                    );
+
+                if (
+                    engagement > 0
+                ) {
+                    engagementSum +=
+                        engagement;
+
+                    engagementCount++;
+                }
+            }
+
+            const engagementRate =
+                engagementCount > 0
+                    ? round(
+                        engagementSum /
+                        engagementCount,
+                        2
+                    )
+                    : 0;
+
+            return res.json({
+                platforms:
+                    platformResults,
+
+                totalFollowers,
+
+                totalViews,
+
+                totalLikes,
+
+                totalPosts,
+
+                engagementRate,
+
+                fetchedAt:
+                    new Date()
+                        .toISOString()
+            });
+
+        } catch (err) {
+            console.error(
+                'Analytics route error:',
+                err
+            );
+
+            return res
+                .status(500)
+                .json({
+                    error:
+                        'Analytics service failed unexpectedly',
+
+                    details:
+                        process.env.NODE_ENV ===
+                        'development'
+                            ? err.message
+                            : undefined
+                });
+        }
+    }
+);
 
 /* ============================================================================
    NOTIFICATIONS
 ============================================================================ */
 
-app.get('/api/notifications', requireAuthentication, (req, res) => {
-    return res.json([
-        { id: 1, message: 'New comment on your Facebook post', time: new Date(Date.now() - 15 * 60000).toISOString(), platform: 'facebook' },
-        { id: 2, message: 'Instagram post scheduled for today published', time: new Date(Date.now() - 30 * 60000).toISOString(), platform: 'instagram' },
-        { id: 3, message: 'LinkedIn article reached 500 views', time: new Date(Date.now() - 60 * 60000).toISOString(), platform: 'linkedin' },
-        { id: 4, message: 'YouTube video hit 1,000 views milestone', time: new Date(Date.now() - 2 * 3600000).toISOString(), platform: 'youtube' },
-        { id: 5, message: 'Twitter/X post trending in your network', time: new Date(Date.now() - 3 * 3600000).toISOString(), platform: 'twitter' },
-        { id: 6, message: 'TikTok video gained 500 new followers', time: new Date(Date.now() - 4 * 3600000).toISOString(), platform: 'tiktok' }
-    ]);
-});
+app.get(
+    '/api/notifications',
+    requireAuthentication,
+    (req, res) => {
+        return res.json([
+            {
+                id: 1,
+                message:
+                    'New comment on your Facebook post',
+                time:
+                    new Date(
+                        Date.now() -
+                        15 * 60000
+                    ).toISOString(),
+                platform:
+                    'facebook'
+            },
+
+            {
+                id: 2,
+                message:
+                    'Instagram post scheduled for today published',
+                time:
+                    new Date(
+                        Date.now() -
+                        30 * 60000
+                    ).toISOString(),
+                platform:
+                    'instagram'
+            },
+
+            {
+                id: 3,
+                message:
+                    'LinkedIn article reached 500 views',
+                time:
+                    new Date(
+                        Date.now() -
+                        60 * 60000
+                    ).toISOString(),
+                platform:
+                    'linkedin'
+            },
+
+            {
+                id: 4,
+                message:
+                    'YouTube video hit 1,000 views milestone',
+                time:
+                    new Date(
+                        Date.now() -
+                        2 * 3600000
+                    ).toISOString(),
+                platform:
+                    'youtube'
+            },
+
+            {
+                id: 5,
+                message:
+                    'Twitter/X post trending in your network',
+                time:
+                    new Date(
+                        Date.now() -
+                        3 * 3600000
+                    ).toISOString(),
+                platform:
+                    'twitter'
+            },
+
+            {
+                id: 6,
+                message:
+                    'TikTok video gained 500 new followers',
+                time:
+                    new Date(
+                        Date.now() -
+                        4 * 3600000
+                    ).toISOString(),
+                platform:
+                    'tiktok'
+            }
+        ]);
+    }
+);
 
 /* ============================================================================
    POST CONTENT
 ============================================================================ */
 
-app.post('/api/post/:platform', requireAuthentication, (req, res) => {
-    const platform = String(req.params.platform || '').toLowerCase();
-    if (!PLATFORM_NAMES.includes(platform)) {
-        return res.status(400).json({ error: `Unknown platform: ${platform}` });
+const VALID_PLATFORMS =
+    new Set(
+        PLATFORM_NAMES
+    );
+
+app.post(
+    '/api/post/:platform',
+    requireAuthentication,
+    (req, res) => {
+        const platform =
+            String(
+                req.params.platform ||
+                ''
+            ).toLowerCase();
+
+        if (
+            !VALID_PLATFORMS.has(
+                platform
+            )
+        ) {
+            return res
+                .status(400)
+                .json({
+                    error:
+                        `Unknown platform: ${platform}`
+                });
+        }
+
+        const title =
+            safe(
+                req.body?.title ||
+                ''
+            );
+
+        const description =
+            safe(
+                req.body?.description ||
+                '',
+                5000
+            );
+
+        if (
+            !title &&
+            !description
+        ) {
+            return res
+                .status(400)
+                .json({
+                    error:
+                        'title or description is required'
+                });
+        }
+
+        console.log(
+            `[${new Date().toISOString()}] POST to ${platform}: ${title}`
+        );
+
+        return res.json({
+            success: true,
+            platform,
+            message:
+                `Content queued for ${platform}`,
+            timestamp:
+                new Date().toISOString()
+        });
     }
-    const title = safe(req.body?.title || '');
-    const description = safe(req.body?.description || '', 5000);
-    if (!title && !description) {
-        return res.status(400).json({ error: 'title or description is required' });
-    }
-    console.log(`[${new Date().toISOString()}] POST to ${platform}: ${title}`);
-    return res.json({
-        success: true,
-        platform,
-        message: `Content queued for ${platform}`,
-        timestamp: new Date().toISOString()
-    });
-});
+);
 
 /* ============================================================================
    UPLOAD
 ============================================================================ */
 
-app.post('/api/upload', requireAuthentication, (req, res) => {
-    try {
-        const { fileName = 'file', fileType = '', fileData = '' } = req.body || {};
-        if (!fileData) {
-            return res.status(400).json({ error: 'No file data provided' });
+app.post(
+    '/api/upload',
+    requireAuthentication,
+    (req, res) => {
+        try {
+            const {
+                fileName = 'file',
+                fileType = '',
+                fileData = ''
+            } = req.body || {};
+
+            if (!fileData) {
+                return res
+                    .status(400)
+                    .json({
+                        error:
+                            'No file data provided'
+                    });
+            }
+
+            let buffer;
+            let ext = 'bin';
+
+            const matches =
+                fileData.match(
+                    /^data:([^;]+);base64,(.+)$/
+                );
+
+            if (matches) {
+                const mime =
+                    matches[1];
+
+                buffer =
+                    Buffer.from(
+                        matches[2],
+                        'base64'
+                    );
+
+                const mimeExt =
+                    mime.split('/')[1];
+
+                if (mimeExt) {
+                    ext =
+                        mimeExt.replace(
+                            /\+xml.*/,
+                            ''
+                        );
+                }
+
+            } else {
+                buffer =
+                    Buffer.from(
+                        fileData,
+                        'base64'
+                    );
+
+                const originalExt =
+                    path.extname(
+                        fileName
+                    ).slice(1);
+
+                if (originalExt) {
+                    ext =
+                        originalExt;
+                }
+            }
+
+            if (
+                !buffer ||
+                !buffer.length
+            ) {
+                return res
+                    .status(400)
+                    .json({
+                        error:
+                            'Uploaded file data is empty or invalid'
+                    });
+            }
+
+            const safeExt =
+                ext
+                    .replace(
+                        /[^a-zA-Z0-9]/g,
+                        ''
+                    )
+                    .toLowerCase() ||
+                'bin';
+
+            const uniqueName =
+                `${Date.now()}_${crypto.randomBytes(6).toString('hex')}.${safeExt}`;
+
+            const filePath =
+                path.join(
+                    uploadsDir,
+                    uniqueName
+                );
+
+            fs.writeFileSync(
+                filePath,
+                buffer
+            );
+
+            const mediaUrl =
+                `/uploads/${uniqueName}`;
+
+            console.log(
+                `[${new Date().toISOString()}] Upload saved: ${mediaUrl}`
+            );
+
+            return res.json({
+                success: true,
+                url: mediaUrl,
+                fileName,
+                fileType
+            });
+
+        } catch (err) {
+            console.error(
+                'Upload error:',
+                err
+            );
+
+            return res
+                .status(500)
+                .json({
+                    error:
+                        'Failed to save media upload'
+                });
         }
-        let buffer;
-        let ext = 'bin';
-        const matches = fileData.match(/^data:([^;]+);base64,(.+)$/);
-        if (matches) {
-            const mime = matches[1];
-            buffer = Buffer.from(matches[2], 'base64');
-            const mimeExt = mime.split('/')[1];
-            if (mimeExt) ext = mimeExt.replace(/\+xml.*/, '');
-        } else {
-            buffer = Buffer.from(fileData, 'base64');
-            const originalExt = path.extname(fileName).slice(1);
-            if (originalExt) ext = originalExt;
-        }
-        if (!buffer || !buffer.length) {
-            return res.status(400).json({ error: 'Uploaded file data is empty or invalid' });
-        }
-        const safeExt = ext.replace(/[^a-zA-Z0-9]/g, '').toLowerCase() || 'bin';
-        const uniqueName = `${Date.now()}_${crypto.randomBytes(6).toString('hex')}.${safeExt}`;
-        const filePath = path.join(uploadsDir, uniqueName);
-        fs.writeFileSync(filePath, buffer);
-        const mediaUrl = `/uploads/${uniqueName}`;
-        console.log(`[${new Date().toISOString()}] Upload saved: ${mediaUrl}`);
-        return res.json({ success: true, url: mediaUrl, fileName, fileType });
-    } catch (err) {
-        console.error('Upload error:', err);
-        return res.status(500).json({ error: 'Failed to save media upload' });
     }
-});
+);
 
 /* ============================================================================
-   ERROR HANDLERS
+   404
 ============================================================================ */
 
-app.use((req, res) => {
-    return res.status(404).json({ error: 'Not found' });
-});
+app.use(
+    (req, res) => {
+        return res
+            .status(404)
+            .json({
+                error:
+                    'Not found'
+            });
+    }
+);
 
-app.use((err, req, res, next) => {
-    console.error('Unhandled server error:', err);
-    if (res.headersSent) return next(err);
-    return res.status(500).json({ error: 'Internal server error' });
-});
+/* ============================================================================
+   GLOBAL ERROR HANDLER
+============================================================================ */
+
+app.use(
+    (err, req, res, next) => {
+        console.error(
+            'Unhandled server error:',
+            err
+        );
+
+        if (
+            res.headersSent
+        ) {
+            return next(err);
+        }
+
+        return res
+            .status(500)
+            .json({
+                error:
+                    'Internal server error'
+            });
+    }
+);
 
 /* ============================================================================
    SESSION CLEANUP
 ============================================================================ */
 
-setInterval(() => {
-    const now = Date.now();
-    for (const [token, session] of sessions.entries()) {
-        if (!session || session.expiresAt < now) {
-            sessions.delete(token);
+setInterval(
+    () => {
+        const now =
+            Date.now();
+
+        for (
+            const [
+                token,
+                session
+            ]
+            of sessions.entries()
+        ) {
+            if (
+                !session ||
+                session.expiresAt <
+                    now
+            ) {
+                sessions.delete(
+                    token
+                );
+            }
         }
-    }
-    for (const [ip, attempt] of loginAttempts.entries()) {
-        if (attempt.resetAt < now - LOGIN_ATTEMPT_WINDOW_MS) {
-            loginAttempts.delete(ip);
+
+        for (
+            const [
+                ip,
+                attempt
+            ]
+            of loginAttempts.entries()
+        ) {
+            if (
+                attempt.resetAt <
+                now -
+                LOGIN_ATTEMPT_WINDOW_MS
+            ) {
+                loginAttempts.delete(
+                    ip
+                );
+            }
         }
-    }
-}, 5 * 60 * 1000).unref();
+    },
+    5 * 60 * 1000
+).unref();
 
 /* ============================================================================
    START SERVER
 ============================================================================ */
 
-app.listen(PORT, () => {
-    console.log('');
-    console.log('🚀 Kiwami Marketing System – API Server');
-    console.log(`   Port:        ${PORT}`);
-    console.log('   Health:      GET  /api/health');
-    console.log('   Login:       POST /api/login');
-    console.log('   Analytics:   POST /api/analytics');
-    console.log('   Analytics:   HTML scraping mode (no API keys required)');
-    console.log('   Notifs:      GET  /api/notifications');
-    console.log('   Post:        POST /api/post/:platform');
-    console.log('   Upload:      POST /api/upload');
-    console.log('');
-});
+app.listen(
+    PORT,
+    () => {
+        console.log('');
+        console.log(
+            '🚀 Kiwami Marketing System – API Server'
+        );
+
+        console.log(
+            `   Port:        ${PORT}`
+        );
+
+        console.log(
+            '   Health:      GET  /api/health'
+        );
+
+        console.log(
+            '   Login:       POST /api/login'
+        );
+
+        console.log(
+            '   Analytics:   POST /api/analytics'
+        );
+
+        console.log(
+            '   Analytics:   URL retrieval enabled'
+        );
+
+        console.log(
+            '   Notifs:      GET  /api/notifications'
+        );
+
+        console.log(
+            '   Post:        POST /api/post/:platform'
+        );
+
+        console.log(
+            '   Upload:      POST /api/upload'
+        );
+
+        console.log('');
+    }
+);
